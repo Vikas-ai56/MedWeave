@@ -10,7 +10,7 @@ from split_learning.checkpoint import StateDict, clone_state, load_module_state
 from split_learning.config import OptimizerFactory, SplitModelConfig, default_optimizer
 from split_learning.errors import ProtocolError
 from split_learning.forward import BackbonePass, backbone_forward
-from split_learning.validation import PendingBatch, check_batch, check_gradient
+from split_learning.validation import PendingBatch, check_batch, check_exact
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,7 @@ class ComputePeer:
         """Update the Backbone and return the gradient for the institution's Head."""
         self._check_version(backbone_version)
         backbone_pass = self._pending.peek(batch_id)
-        check_gradient(gradient, backbone_pass.output.shape, "gradient")
+        check_exact(gradient, backbone_pass.output.shape, "gradient")
         self._pending.take(batch_id)
         input_gradient = backbone_backward(backbone_pass, gradient, self.optimizer)
         self._num_batches += 1

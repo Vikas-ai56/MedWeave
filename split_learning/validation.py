@@ -24,11 +24,11 @@ def check_batch(tensor: Tensor, sample_shape: Shape, name: str) -> None:
         raise ShapeError(f"{name} must contain at least one sample")
 
 
-def check_gradient(gradient: Tensor, expected: torch.Size, name: str) -> None:
-    """A returned gradient must match the tensor it was computed for exactly."""
-    check_batch(gradient, tuple(expected[1:]), name)
-    if gradient.shape != expected:
-        raise ShapeError(f"{name} must have shape {tuple(expected)}, got {tuple(gradient.shape)}")
+def check_exact(tensor: Tensor, expected: torch.Size, name: str) -> None:
+    """`tensor` must have exactly `expected` shape, e.g. a gradient matching its activations."""
+    check_batch(tensor, tuple(expected[1:]), name)
+    if tensor.shape != expected:
+        raise ShapeError(f"{name} must have shape {tuple(expected)}, got {tuple(tensor.shape)}")
 
 
 def check_labels(labels: Tensor, batch_size: int, num_classes: int) -> None:
