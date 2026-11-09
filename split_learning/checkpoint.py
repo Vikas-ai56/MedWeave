@@ -5,6 +5,7 @@ Tail checkpoints stay with their institution. Files are plain `torch.save`
 dictionaries and are always read with `weights_only=True`.
 """
 
+import copy
 import pickle
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,9 +25,12 @@ StateDict = dict[str, Tensor]
 
 
 def load_module_state(module: nn.Module, state_dict: Mapping[str, Tensor], name: str) -> None:
+    """Load all of `state_dict` or nothing: on a mismatch the module is left unchanged."""
+    backup = clone_state(module)
     try:
         module.load_state_dict(state_dict)
     except RuntimeError as error:
+        module.load_state_dict(backup)
         raise CheckpointError(f"{name} checkpoint does not match the configured architecture: {error}") from error
 
 
@@ -86,10 +90,20 @@ def load_institution_checkpoint(path: str | Path, institution: "Institution") ->
             f"checkpoint belongs to {checkpoint['institution_id']!r}, "
             f"not {institution.institution_id!r}"
         )
-    load_module_state(institution.head, checkpoint["head"], "Head")
-    load_module_state(institution.tail, checkpoint["tail"], "Tail")
-    load_optimizer_state(institution.head_optimizer, checkpoint["head_optimizer"], "Head")
-    load_optimizer_state(institution.tail_optimizer, checkpoint["tail_optimizer"], "Tail")
+    parts = [
+        (institution.head, checkpoint["head"], institution.head_optimizer, checkpoint["head_optimizer"], "Head"),
+        (institution.tail, checkpoint["tail"], institution.tail_optimizer, checkpoint["tail_optimizer"], "Tail"),
+    ]
+    backups = [(clone_state(module), copy.deepcopy(optimizer.state_dict())) for module, _, optimizer, _, _ in parts]
+    try:
+        for module, module_state, optimizer, optimizer_state, name in parts:
+            load_module_state(module, module_state, name)
+            load_optimizer_state(optimizer, optimizer_state, name)
+    except CheckpointError:
+        for (module, _, optimizer, _, _), (module_backup, optimizer_backup) in zip(parts, backups):
+            module.load_state_dict(module_backup)
+            optimizer.load_state_dict(optimizer_backup)
+        raise
 
 
 def get_weights(module: nn.Module) -> list[np.ndarray]:
