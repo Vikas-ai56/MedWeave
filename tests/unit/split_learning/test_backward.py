@@ -80,3 +80,20 @@ def test_backward_updates_every_component(config: SplitModelConfig, batch) -> No
     for module, state in zip((head, backbone, tail), before):
         changed = any(not torch.equal(p, state[k]) for k, p in module.state_dict().items())
         assert changed, type(module).__name__
+
+
+def test_exchanged_gradients_match_monolithic_boundary_gradients(config: SplitModelConfig, batch) -> None:
+    inputs, labels = batch
+    head, backbone, tail = build_head(config), build_backbone(config), build_tail(config)
+    reference = nn.Sequential(copy.deepcopy(head), copy.deepcopy(backbone), copy.deepcopy(tail))
+
+    _, _, grad_output, grad_smashed = run_split_backward(head, backbone, tail, inputs, labels)
+
+    head_output = reference[0](inputs)
+    head_output.retain_grad()
+    backbone_output = reference[1](head_output)
+    backbone_output.retain_grad()
+    F.cross_entropy(reference[2](backbone_output), labels).backward()
+
+    assert torch.allclose(grad_output, backbone_output.grad, atol=1e-7)
+    assert torch.allclose(grad_smashed, head_output.grad, atol=1e-7)
