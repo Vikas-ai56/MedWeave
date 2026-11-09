@@ -1,3 +1,5 @@
+import torch
+
 from split_learning.backbone import build_backbone
 from split_learning.config import SplitModelConfig
 from split_learning.forward import backbone_forward, head_forward, tail_forward
@@ -32,3 +34,16 @@ def test_tail_forward_computes_loss_from_local_labels(config: SplitModelConfig, 
 
     assert tail_pass.logits.shape == (inputs.shape[0], config.num_classes)
     assert tail_pass.loss.ndim == 0 and tail_pass.loss.item() > 0
+
+
+def test_sent_tensors_do_not_share_memory_with_the_sender(config: SplitModelConfig, batch) -> None:
+    inputs, _ = batch
+    smashed, head_pass = head_forward(build_head(config), inputs)
+    output, backbone_pass = backbone_forward(build_backbone(config), smashed)
+    head_activations, backbone_output = head_pass.activations.clone(), backbone_pass.output.clone()
+
+    smashed.add_(1.0)
+    output.add_(1.0)
+
+    assert torch.equal(head_pass.activations, head_activations)
+    assert torch.equal(backbone_pass.output, backbone_output)

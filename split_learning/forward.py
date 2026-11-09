@@ -1,8 +1,9 @@
 """Forward half of the U-shaped split.
 
-Each function returns a detached tensor (what crosses the network) plus a pass
+Each function returns a detached copy (what crosses the network) plus a pass
 object holding the local autograd graph, which the matching backward function
-in `split_learning.backward` consumes.
+in `split_learning.backward` consumes. Copying means that, even in one process,
+a receiver can never write into the sender's tensors.
 """
 
 from collections.abc import Callable
@@ -38,13 +39,13 @@ class TailPass:
 
 def head_forward(head: Head, inputs: Tensor) -> tuple[Tensor, HeadPass]:
     activations = head(inputs)
-    return activations.detach(), HeadPass(activations)
+    return activations.detach().clone(), HeadPass(activations)
 
 
 def backbone_forward(backbone: Backbone, smashed: Tensor) -> tuple[Tensor, BackbonePass]:
     received = smashed.detach().requires_grad_()
     output = backbone(received)
-    return output.detach(), BackbonePass(received, output)
+    return output.detach().clone(), BackbonePass(received, output)
 
 
 def tail_forward(
