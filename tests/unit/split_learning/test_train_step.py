@@ -6,7 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from split_learning.backbone import build_backbone
-from split_learning.checkpoint import get_weights, set_weights
+from split_learning.checkpoint import get_weights, weights_to_state
 from split_learning.config import SplitModelConfig
 from split_learning.head import build_head
 from split_learning.step import ComputePeer, Institution, train_step
@@ -87,7 +87,7 @@ def test_sequential_turns_share_backbone_but_keep_local_models(
     checkpoint = get_weights(peer_a.backbone)
 
     peer_b = make_peer()
-    set_weights(peer_b.backbone, checkpoint)
+    peer_b.backbone.load_state_dict(weights_to_state(peer_b.backbone, checkpoint))
     backbone_received = snapshot(peer_b.backbone)
     second_head_before = snapshot(second.head)
     first_head_after_turn = snapshot(first.head)
