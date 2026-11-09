@@ -62,7 +62,7 @@ def test_set_weights_rejects_wrong_length(config: SplitModelConfig) -> None:
 def test_loading_into_mismatched_architecture_fails(config: SplitModelConfig, tmp_path) -> None:
     path = tmp_path / "backbone.pt"
     save_checkpoint(build_backbone(config), path, version=1)
-    wider = Backbone(config.head_channels, config.backbone_channels * 2)
+    wider = Backbone(config.head_channels[-1], [width * 2 for width in config.backbone_channels])
 
     with pytest.raises(RuntimeError):
         load_checkpoint(wider, path)

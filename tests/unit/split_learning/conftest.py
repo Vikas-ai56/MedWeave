@@ -10,7 +10,13 @@ IMAGE_SIZE = 8
 
 @pytest.fixture
 def config() -> SplitModelConfig:
-    return SplitModelConfig(in_channels=1, head_channels=4, backbone_channels=6, num_classes=3)
+    return SplitModelConfig(
+        in_channels=1,
+        image_size=(IMAGE_SIZE, IMAGE_SIZE),
+        head_channels=(4,),
+        backbone_channels=(6,),
+        num_classes=3,
+    )
 
 
 @pytest.fixture

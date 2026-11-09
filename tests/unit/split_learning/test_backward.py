@@ -59,7 +59,7 @@ def test_exchanged_gradients_match_activation_shapes(config: SplitModelConfig, b
 
 def test_additive_noise_passes_gradient_straight_through(config: SplitModelConfig, batch) -> None:
     inputs, labels = batch
-    noise = torch.randn(inputs.shape[0], config.head_channels, 4, 4) * 0.1
+    noise = torch.randn(inputs.shape[0], *config.head_output_shape) * 0.1
     head, backbone, tail = build_head(config), build_backbone(config), build_tail(config)
     reference = nn.Sequential(copy.deepcopy(head), copy.deepcopy(backbone), copy.deepcopy(tail))
 

@@ -1,25 +1,22 @@
+from collections.abc import Sequence
+
 from torch import Tensor, nn
 
 from split_learning.config import SplitModelConfig, seeded
+from split_learning.layers import conv_blocks
 
 
 class Backbone(nn.Module):
     """Shared middle of the U, executed by the assigned compute peer."""
 
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+    def __init__(self, in_channels: int, channels: Sequence[int]) -> None:
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(),
-        )
+        self.layers = conv_blocks(in_channels, channels)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.layers(x)
+    def forward(self, activations: Tensor) -> Tensor:
+        return self.layers(activations)
 
 
 def build_backbone(config: SplitModelConfig) -> Backbone:
     with seeded(config.seed + 1):
-        return Backbone(config.head_channels, config.backbone_channels)
+        return Backbone(config.head_channels[-1], config.backbone_channels)

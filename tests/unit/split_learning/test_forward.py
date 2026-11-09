@@ -11,7 +11,7 @@ def test_head_forward_sends_detached_activations(config: SplitModelConfig, batch
 
     assert not smashed.requires_grad
     assert head_pass.activations.requires_grad
-    assert smashed.shape == (inputs.shape[0], config.head_channels, 4, 4)
+    assert smashed.shape == (inputs.shape[0], *config.head_output_shape)
 
 
 def test_backbone_forward_returns_detached_output(config: SplitModelConfig, batch) -> None:
@@ -21,7 +21,7 @@ def test_backbone_forward_returns_detached_output(config: SplitModelConfig, batc
 
     assert not output.requires_grad
     assert backbone_pass.received.requires_grad and backbone_pass.received.is_leaf
-    assert output.shape == (inputs.shape[0], config.backbone_channels, 2, 2)
+    assert output.shape == (inputs.shape[0], *config.backbone_output_shape)
 
 
 def test_tail_forward_computes_loss_from_local_labels(config: SplitModelConfig, batch) -> None:
