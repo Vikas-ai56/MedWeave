@@ -1,5 +1,7 @@
 import copy
+import gc
 import inspect
+import weakref
 
 import pytest
 import torch
@@ -214,3 +216,19 @@ def test_step_with_unloaded_peer_fails_cleanly(institution, config, batch) -> No
     with pytest.raises(ProtocolError, match="load_backbone"):
         train_step(institution, ComputePeer(config), *batch)
     institution.head_forward("next", batch[0])
+
+
+def test_computation_graphs_are_freed_after_each_batch(institution, peer, config) -> None:
+    outputs: list[weakref.ref] = []
+
+    def track(module, args, output) -> None:
+        outputs.append(weakref.ref(output))
+
+    hooks = [institution.head.register_forward_hook(track), peer.backbone.register_forward_hook(track)]
+    train_batches(institution, peer, synthetic_batches(config, 3))
+    for hook in hooks:
+        hook.remove()
+    gc.collect()
+
+    assert len(outputs) == 6
+    assert all(ref() is None for ref in outputs)
