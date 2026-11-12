@@ -1,0 +1,282 @@
+# Coordinator Guide for Teammates
+
+How to run the MedWeave coordinator and how your module connects to it.
+Maintained by Member 1. For the file-by-file layout, see
+[`coordinator/README.md`](../coordinator/README.md).
+
+## 1. What works today
+
+The coordinator runs a full Phase 1 session on one laptop:
+
+1. 4 institutions register.
+2. Each institution takes a training turn, and a different institution runs
+   the Backbone for it.
+3. The coordinator keeps every Backbone version and ends up holding the final
+   one.
+
+| Part | Owner | Status |
+|---|---|---|
+| Split-learning engine (Head, Backbone, Tail) | Member 2 | Done, used by the coordinator |
+| Scheduler, checkpoints, relay, Flower orchestration | Member 1 | Done, tested end to end |
+| Dataset loading and activation noise | Member 3 | Done: PathMNIST shards per institution, Gaussian activation noise (`docs/features/data-and-privacy.md`) |
+| Dashboard, database, Docker | Member 4 | **Not yet** |
+
+Institutions train on their own PathMNIST shard (9 classes) with Adam
+(lr 0.001) and a small CNN with GroupNorm. Each turn is one pass over the
+owner's shard (351 batches of 64, about 12 s), and after every round each
+institution scores its own Head and Tail with the latest Backbone on the public
+validation split. The default 2 rounds take about 2 minutes and reach about
+0.76 mean validation accuracy (also with noise 0.25).
+
+## 2. Setup
+
+The code is on the `coordinator` branch, which already includes Member 2's
+`split_learning` code.
+
+```bash
+git fetch
+git checkout coordinator
+
+python3 -m venv venv                  # must be called "venv", at the repo root
+source venv/bin/activate
+pip install torch numpy flwr pytest mlflow
+```
+
+The first `run_local.sh` also downloads PathMNIST (205 MB, once per machine,
+into `~/.medweave/data` or `$MEDWEAVE_DATA_DIR`). To do that ahead of a demo:
+`python -m institution_data prepare`.
+
+Tested with Python 3.14.7, torch 2.15 and flwr 1.43. The run script looks for
+the virtual environment at `venv/` in the repo root.
+
+## 3. Run a session
+
+From the repo root:
+
+```bash
+coordinator/flower_app/run_local.sh                               # 1 round
+coordinator/flower_app/run_local.sh --run-config "num-rounds=2"   # 2 rounds
+```
+
+Expected output (other log lines removed):
+
+```
+[coordinator] registered institutions: inst-1, inst-2, inst-3, inst-4
+[coordinator] initialised Backbone v0
+[coordinator] round 1: inst-1 trains, inst-2 computes, Backbone v0
+[coordinator]   done in 9.2s: 351 batches, loss 1.603, accuracy 0.42, noise std 0 (activations changed 0.0%) -> Backbone v1
+[coordinator] round 1: inst-2 trains, inst-3 computes, Backbone v1
+...
+[coordinator] round 1 val accuracy with Backbone v4 (10004 samples): inst-1 0.372, inst-2 0.528, inst-3 0.552, inst-4 0.572; mean 0.506
+[coordinator] session complete: coordinator holds Backbone v4
+run 2869353954842831473: finished:completed
+```
+
+The script's exit code follows the last line: 0 only for `finished:completed`.
+A failed turn or evaluation ends the run as `finished:failed` and exit 1.
+
+Good to know:
+
+- **The first run takes about 40 seconds and needs internet.** Flower builds a
+  runtime environment the first time. Later runs start straight away, so do a
+  practice run before any demo.
+- **Everything is saved in `.medweave_local/`** (git-ignored):
+
+  | Folder | Contents |
+  |---|---|
+  | `coordinator/checkpoints/` | `backbone_v0.pt`, `backbone_v1.pt`, ... |
+  | `institutions/` | `inst-1.pt` ... each institution's own Head and Tail |
+  | `logs/` | `superlink.log`, `inst-1.log` ... |
+
+- **A new run continues from the latest saved Backbone.** To start over from
+  v0, run `rm -rf .medweave_local`.
+
+## 4. How a session works
+
+The script starts 6 kinds of processes on your laptop:
+
+- 1 **SuperLink**: Flower's server, port 8000
+- 4 **SuperNodes**: one per institution, ports 9094–9097, each started with
+  `institution-id="inst-N"`
+- the **coordinator** itself (Flower's ServerApp), which also runs the relay
+  on port 8765
+
+```text
+COORDINATOR                                            INSTITUTIONS
+register ─────────── "query.register" ──────────────>  each replies with its id
+for each turn (e.g. inst-1 trains, inst-2 computes):
+  Backbone vN ─────── "train.peer" ────────────────>  inst-2 loads Backbone vN
+  start ───────────── "train.owner" ───────────────>  inst-1 starts its batches
+
+  per batch, through the relay (HTTP):
+    inst-1 ── activations ──────> inst-2   (Backbone forward)
+    inst-1 <── backbone output ── inst-2
+    inst-1 ── gradient ─────────> inst-2   (Backbone backward + update)
+    inst-1 <── input gradient ─── inst-2
+  inst-1 ── done ──> inst-2
+
+  Backbone vN+1 <──── updated weights ─────────────── inst-2
+  save as vN+1, then next turn
+```
+
+There are two kinds of traffic:
+
+- **Flower handles control:** registration, "start your turn", and sending
+  the Backbone out and back.
+- **The relay handles the per-batch tensors.** It checks every message
+  belongs to the current turn (right institutions, right Backbone version),
+  forwards it without opening it, and never stores or logs it.
+
+What stays where:
+
+- Images and labels never leave the data owner.
+- Each institution's Head and Tail stay on its own machine.
+- The compute peer only ever sees noisy activations and gradients.
+
+## 5. How your module plugs in
+
+### Member 3: data and noise
+
+Both connection points are in `coordinator/flower_app/client_app.py`, in
+`train_own_data()`.
+
+Done. In `train_own_data()` the data owner opens only its own shard
+(`institution_data.open_institution_training`) and builds the turn's batches
+from `TurnInfo.round_number` (`training_loader`): float `(B, 3, 28, 28)` in
+[0, 1] and `torch.long` `(B,)` labels in 0..8. It perturbs the activations with
+`privacy.GaussianActivationNoise` before sending them and reports `noise_std`
+and `activation_change_pct` with its metrics. `MODEL_CONFIG` is PathMNIST:
+3×28×28, 9 classes. Details: `docs/features/data-and-privacy.md`.
+
+### Member 2: split-learning engine
+
+The coordinator uses these parts of `split_learning`:
+
+- `ComputePeer`: `load_backbone`, `forward`, `backward`, `backbone_update`,
+  `discard_pending`
+- `Institution`: `head_forward`, `tail_step`, `head_backward`,
+  `discard_pending`
+- `split_learning.checkpoint`: Backbone and institution checkpoint save/load
+- `training.summarize` and `Summary`
+
+If you change any of these signatures, tell Member 1. The test
+`tests/unit/coordinator/test_roles.py` checks that a turn through the relay
+gives exactly the same loss and weights as your in-process
+`train_batches`, so it will catch most breaking changes.
+
+### Member 4: dashboard, database and Docker
+
+**Data for the database.**
+- `CheckpointManager.commit()` returns a `CheckpointRecord` with `version`,
+  `storage_path`, `created_by` and `created_at`. This matches the
+  `model_checkpoints` table.
+- `run_session()` returns a `SessionResult`: `turns` holds a `TurnResult` per
+  turn with `turn` (round, data owner, compute peer), `checkpoint`, `loss`,
+  `accuracy`, `num_batches`, `seconds`, `noise_std` and
+  `activation_change_pct`; `evaluations` holds a `RoundEvaluation` per round
+  with each institution's held-out `accuracy` and `loss`. This covers
+  `compute_assignments` and `training_events`.
+- Every session is also recorded in MLflow (`docs/features/experiment-tracking.md`):
+  the dashboard can read runs, metrics and artifacts from that store instead of
+  a new export. Nothing is written to the project database yet.
+
+**Live status for the dashboard.** `run_session(..., log=...)` takes a
+function that receives each status line. It currently prints them; it can be
+pointed at the dashboard backend instead.
+
+**Docker, and later multiple laptops.**
+
+Processes to run:
+
+| Process | Command | Port |
+|---|---|---|
+| Coordinator | `flower-superlink --insecure` | 8000 |
+| Relay | started by the coordinator automatically | 8765 |
+| Each institution | `flower-supernode --insecure --superlink <coordinator>:8000 --port 9094 --node-config 'institution-id="inst-N"'` | 9094 |
+
+Each institution only needs a distinct port when several run on the same
+machine.
+
+Environment for every process:
+
+| Variable | Purpose |
+|---|---|
+| `PYTHONPATH` | the repo root |
+| `PATH` | must include the venv's `bin` |
+| `MEDWEAVE_STATE_DIR` | where that machine's checkpoints go |
+| `FLWR_HOME` | where Flower keeps its config |
+
+Settings to change in `pyproject.toml` for multi-laptop runs:
+- `relay-host`: the address the relay listens on, e.g. `0.0.0.0` to accept
+  connections from other machines.
+- `relay-url`: the address the institutions use to reach the relay. It must
+  be the coordinator laptop's LAN address, e.g. `http://192.168.1.10:8765`,
+  not `127.0.0.1`.
+
+**TLS.** Everything currently runs with `--insecure` over plain HTTP. TLS
+must be added before the multi-laptop demo (SPEC §5.4).
+
+## 6. Settings
+
+Settings are in `[tool.flwr.app.config]` in
+`coordinator/flower_app/pyproject.toml`. To override one for a single run:
+`run_local.sh --run-config "key=value"`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `num-institutions` | 4 | How many institutions the coordinator waits for |
+| `num-rounds` | 2 | Each round gives every institution one turn |
+| `batches-per-turn` | 351 | Batches each data owner trains per turn (351 × 64 = one pass over a 22,499-sample shard) |
+| `turn-timeout` | 300.0 | Seconds before a turn is treated as failed |
+| `registration-timeout` | 120.0 | Seconds to wait for all institutions to connect |
+| `relay-host` | `127.0.0.1` | Address the relay listens on |
+| `relay-port` | 8765 | Relay port |
+| `relay-url` | `http://127.0.0.1:8765` | Address the institutions use to reach the relay |
+| `partition-seed` | 0 | Which provisioned PathMNIST partition and batch order |
+| `batch-size` | 64 | Training batch size |
+| `noise-std` | 0.0 | Gaussian noise std on Head activations (0 = no noise) |
+| `noise-seed` | 0 | Base seed for the noise |
+| `optimizer` | `adam` | Optimizer for Head, Tail and Backbone (`adam` or `sgd`) |
+| `learning-rate` | 0.001 | Learning rate for that optimizer |
+| `evaluation-split` | `val` | Held-out split each institution scores after every round (`val`, `test`, or `none` to skip) |
+| `evaluation-batch-size` | 512 | Batch size for that evaluation |
+| `tracking` | `mlflow` | Record the session in MLflow (`python -m tracking ui` to view), or `none` |
+
+## 7. Tests
+
+```bash
+python -m pytest tests -v                    # everything (218 tests)
+python -m pytest tests/unit/coordinator -v   # coordinator only
+```
+
+The session tests run a full 4-institution session through the real
+institution code and a real HTTP relay, without starting Flower processes.
+`run_local.sh` is the end-to-end check with real Flower processes.
+
+## 8. Known limitations
+
+- **No TLS.**
+- **No disconnect handling.** If a turn fails, the session stops and the
+  Backbone is left unchanged. Skipping or retrying an offline institution is
+  not built yet.
+- **No database yet** (section 5, Member 4).
+- **Test-set ownership is undecided**, so evaluation uses the validation split
+  by default; `evaluation-split=test` works but is not the agreed protocol.
+- A restarted session continues from the latest Backbone but starts the turn
+  order from the first turn again.
+
+## 9. Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `No such file or directory: 'flower-superexec'` | The venv isn't on your `PATH`. Use `run_local.sh`, or run `source venv/bin/activate` first. |
+| `Connection to the SuperLink is unavailable` | The SuperLink didn't start. Check `.medweave_local/logs/superlink.log`. Port 8000 may be taken by a leftover process. |
+| `Address already in use` (8000, 8765, 9094–9097) | Flower processes from an earlier run are still alive. Run `pkill -f "venv/bin/flower-"`. They can take a few seconds to shut down on their own. |
+| `only N of 4 institutions connected` | A SuperNode failed to start. Check `.medweave_local/logs/inst-N.log`. |
+| `turn ... not committed: ...` | The message lists what went wrong on **both** sides. Usually one side's real error caused the other side to time out. |
+| `StaleUpdateError` | A Backbone update was trained from an older version than the latest. Nothing was saved. |
+| `no partition manifest` | The institution's data is not provisioned for that `partition-seed`. Run `python -m institution_data prepare --seed N`. |
+| `checkpoint was trained with SGD, institution uses Adam` | The `optimizer` setting changed since the institution's last checkpoint. Start fresh: `rm -rf .medweave_local`. |
+| `Backbone checkpoint does not match the configured architecture` | The model changed (e.g. GroupNorm was added) since the stored checkpoints were made. Run `rm -rf .medweave_local`. |
+| Want a clean start from v0 | `rm -rf .medweave_local` |
+| Run is slow the first time | Normal. Flower builds its environment once (about 40 seconds). |
