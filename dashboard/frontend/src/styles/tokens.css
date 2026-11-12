@@ -1,0 +1,42 @@
+/* MedWeave: a dark scientific-instrument palette. Midnight graphite, translucent glass,
+   thin luminous lines. Mint = data owner / local data, violet = shared Backbone / compute,
+   teal = live activity, amber = simulated or warning, coral = failure.
+   Status colours always ship with an icon and a label. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0a0c0f;
+  --bg-2: #0e1115;
+  --chart-surface: #101318;
+  --glass: rgba(16, 20, 26, 0.74);
+  --glass-strong: rgba(14, 17, 22, 0.94);
+  --glass-soft: rgba(255, 255, 255, 0.018);
+
+  --line: rgba(208, 222, 236, 0.075);
+  --line-2: rgba(208, 222, 236, 0.13);
+  --line-3: rgba(208, 222, 236, 0.22);
+
+  --ink: #e7ebee;
+  --ink-2: #a9b2bc;
+  --ink-3: #7d8793;
+
+  --mint: #7fe0bd;
+  --teal: #5cc8d0;
+  --violet: #a597ff;
+  --amber: #efb764;
+  --coral: #f08585;
+  --sdg9: #f6915c;
+
+  --font-display: "Newsreader Variable", "Iowan Old Style", Georgia, serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --radius: 18px;
+  --radius-sm: 10px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --sidebar-w: 232px;
+  --bar-h: 61px;
+
+  --shadow-float: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 28px 70px -24px rgba(0, 0, 0, 0.75);
+}
