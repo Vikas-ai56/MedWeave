@@ -1,82 +1,17 @@
 """Coordinator session against a fake Flower Grid that calls the real ClientApp handlers."""
 
-from concurrent.futures import ThreadPoolExecutor
-
 import pytest
 import torch
-from flwr.app import Context, Error, Message, RecordDict
-from flwr.supercore.task_identity import TaskIdentity
 
+from fake_grid import IDS, FakeGrid
 from coordinator.checkpoint_manager.manager import CheckpointManager
-from coordinator.flower_app import client_app, protocol
+from coordinator.flower_app import protocol
 from coordinator.flower_app.protocol import MODEL_CONFIG
 from coordinator.flower_app.session import SessionError, register_institutions, run_session, run_turn
 from coordinator.relay.relay import Relay
 from coordinator.relay.transport import RelayServer
 from coordinator.scheduling.schedule import Turn, build_schedule
 from split_learning.backbone import build_backbone
-
-IDS = ["inst-1", "inst-2", "inst-3", "inst-4"]
-HANDLERS = {
-    protocol.REGISTER: client_app.register,
-    protocol.TRAIN_AS_PEER: client_app.compute_for_peer,
-    protocol.TRAIN_AS_OWNER: client_app.train_own_data,
-}
-
-
-class FakeGrid:
-    """Delivers each message to the ClientApp handler of its node, concurrently."""
-
-    def __init__(self, institution_ids, failing=(), silent=()):
-        self.contexts = {
-            100 + index: Context(
-                run_id=1,
-                node_id=100 + index,
-                node_config={protocol.INSTITUTION_ID: institution_id},
-                state=RecordDict(),
-                run_config={},
-            )
-            for index, institution_id in enumerate(institution_ids)
-        }
-        self.failing = set(failing)  # (institution_id, message_type) pairs that raise
-        self.silent = set(silent)  # institution ids whose replies get lost
-
-    def node_of(self, institution_id):
-        return next(n for n, c in self.contexts.items() if c.node_config[protocol.INSTITUTION_ID] == institution_id)
-
-    def get_node_ids(self):
-        return list(self.contexts)
-
-    def send_and_receive(self, messages, *, timeout=None):
-        messages = list(messages)
-        with ThreadPoolExecutor(max_workers=len(messages)) as pool:
-            replies = list(pool.map(self._deliver, messages))
-        return [reply for reply in replies if reply is not None]
-
-    def _deliver(self, msg):
-        context = self.contexts[msg.metadata.dst_node_id]
-        institution_id = context.node_config[protocol.INSTITUTION_ID]
-        try:
-            if (institution_id, msg.metadata.message_type) in self.failing:
-                raise RuntimeError("simulated crash")
-            reply = HANDLERS[msg.metadata.message_type](msg, context)
-        except Exception as error:  # Flower turns handler exceptions into error replies
-            reply = Message(Error(code=1, reason=str(error)), reply_to=msg)
-        return None if institution_id in self.silent else reply
-
-
-@pytest.fixture(autouse=True)
-def flower_task_identity():
-    saved = (TaskIdentity._run_id, TaskIdentity._task_id, TaskIdentity._node_id)
-    TaskIdentity.run_id, TaskIdentity.task_id, TaskIdentity.node_id = 1, 1, 0
-    yield
-    TaskIdentity._run_id, TaskIdentity._task_id, TaskIdentity._node_id = saved
-
-
-@pytest.fixture(autouse=True)
-def state_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEDWEAVE_STATE_DIR", str(tmp_path))
-    return tmp_path
 
 
 @pytest.fixture

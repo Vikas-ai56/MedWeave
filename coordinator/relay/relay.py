@@ -8,13 +8,17 @@ undelivered messages when the turn closes.
 """
 
 import io
+import logging
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
 import torch
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
 
 
 class RelayError(Exception):
@@ -76,10 +80,19 @@ def decode_tensor(body: bytes) -> Tensor:
     return tensor
 
 
-class Relay:
-    """Per-recipient mailboxes for the one turn that is currently running."""
+# Told the kind, data owner and batch id of each relayed message - never its body.
+MessageListener = Callable[["Kind", str, str], None]
 
-    def __init__(self) -> None:
+
+class Relay:
+    """Per-recipient mailboxes for the one turn that is currently running.
+
+    `on_message`, if given, is called after each accepted message with its
+    kind, data owner and batch id (used for live progress on the dashboard).
+    """
+
+    def __init__(self, on_message: MessageListener | None = None) -> None:
+        self._on_message = on_message
         self._lock = threading.Lock()
         self._turn: ActiveTurn | None = None
         self._mailboxes: dict[str, queue.Queue[Envelope]] = {}
@@ -120,6 +133,11 @@ class Relay:
                 )
             mailbox = self._mailboxes[recipient]
         mailbox.put(envelope)
+        if self._on_message is not None:
+            try:
+                self._on_message(envelope.kind, envelope.institution_id, envelope.batch_id)
+            except Exception:  # monitoring must never break training
+                logger.exception("relay message listener failed")
 
     def receive(self, recipient: str, timeout: float) -> Envelope:
         with self._lock:

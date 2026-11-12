@@ -38,6 +38,7 @@ for each turn in the schedule:
 | `flower_app/protocol.py` | Message types and the `TurnInfo` sent to both parties |
 | `flower_app/roles.py` | Data-owner and compute-peer logic for one turn, independent of Flower |
 | `flower_app/session.py` | Coordinator loop: registration, run each turn, commit the update |
+| `flower_app/observer.py` | Reports registrations, turns, batch progress and checkpoints to the metadata database for the dashboard |
 | `flower_app/server_app.py`, `client_app.py` | Flower entry points |
 | `flower_app/pyproject.toml` | Flower app definition and run settings |
 | `flower_app/run_local.sh` | Starts 1 SuperLink and 4 SuperNodes and runs a session on one machine |
@@ -84,7 +85,5 @@ Flower processes. `run_local.sh` is the end-to-end check with real processes.
 - **No disconnect handling.** A failed turn stops the session without
   changing the Backbone. Skipping or retrying an offline institution
   (SPEC §5.6) is not built yet.
-- **No metadata database.** `CheckpointRecord` and `TurnResult` hold what the
-  SPEC §3.2 tables need, ready for when the database exists.
 - A restarted session continues from the latest Backbone but starts the
   schedule from turn 1 again.
