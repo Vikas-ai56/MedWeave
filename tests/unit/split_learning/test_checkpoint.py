@@ -15,7 +15,7 @@ from split_learning.checkpoint import (
     weights_to_state,
 )
 from split_learning.compute_peer import ComputePeer
-from split_learning.config import SplitModelConfig
+from split_learning.config import SplitModelConfig, optimizer_factory
 from split_learning.errors import CheckpointError
 from split_learning.institution import Institution
 
@@ -183,3 +183,14 @@ def test_failed_backbone_load_leaves_weights_unchanged(config) -> None:
         peer.load_backbone(partial, "1")
     for key, value in peer.backbone.state_dict().items():
         assert torch.equal(value, before[key]), key
+
+
+def test_institution_checkpoint_from_another_optimizer_type_is_refused(config, tmp_path) -> None:
+    path = tmp_path / "inst.pt"
+    save_institution_checkpoint(path, Institution("inst-1", config, optimizer_factory("sgd", 0.01)))
+    adam_institution = Institution("inst-1", config, optimizer_factory("adam", 0.001))
+    head_before = copy.deepcopy(adam_institution.head.state_dict())
+
+    with pytest.raises(CheckpointError, match="trained with SGD, institution uses Adam"):
+        load_institution_checkpoint(path, adam_institution)
+    assert all(torch.equal(v, head_before[k]) for k, v in adam_institution.head.state_dict().items())

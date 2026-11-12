@@ -1,15 +1,24 @@
-"""The coordinator's session loop: register institutions, then run each turn.
+"""The coordinator's session loop: register institutions, run each turn, evaluate after each round.
 
 Written against a minimal `Grid` interface so it can be tested without
 starting Flower processes. `server_app.py` passes Flower's real `Grid`.
+
+After the last turn of every round (when evaluation is enabled) every institution
+receives the latest Backbone and scores its own Head and Tail on a public held-out
+split locally; only loss, accuracy and sample count come back.
+
+Every accepted turn is tracked at step = its new Backbone version (train loss and
+accuracy, activation change, seconds) and every evaluation at step = round number
+(per-institution and mean validation accuracy), through the `tracking.Tracker` given.
 """
 
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Protocol
 
-from flwr.app import ArrayRecord, Message, RecordDict
+from flwr.app import ArrayRecord, ConfigRecord, Message, RecordDict
 
 from coordinator.checkpoint_manager.manager import CheckpointManager, CheckpointRecord
 from coordinator.flower_app import protocol
@@ -17,6 +26,7 @@ from coordinator.flower_app.protocol import TurnInfo
 from coordinator.relay.relay import Relay
 from coordinator.scheduling.schedule import Turn
 from split_learning.compute_peer import BackboneUpdate
+from tracking import NullTracker, Tracker
 
 Log = Callable[[str], None]
 
@@ -28,7 +38,7 @@ class Grid(Protocol):
 
 
 class SessionError(Exception):
-    """Registration or a training turn failed; the Backbone was not updated."""
+    """Registration, a training turn or an evaluation failed; a failed turn leaves the Backbone unchanged."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,35 @@ class TurnResult:
     accuracy: float
     num_batches: int
     seconds: float
+    noise_std: float
+    activation_change_pct: float
+
+
+@dataclass(frozen=True)
+class EvaluationSettings:
+    split: str
+    batch_size: int
+    timeout: float
+
+
+@dataclass(frozen=True)
+class RoundEvaluation:
+    round_number: int
+    backbone_version: int
+    split: str
+    accuracy: dict[str, float]
+    loss: dict[str, float]
+    num_samples: int
+
+    @property
+    def mean_accuracy(self) -> float:
+        return sum(self.accuracy.values()) / len(self.accuracy)
+
+
+@dataclass(frozen=True)
+class SessionResult:
+    turns: list[TurnResult]
+    evaluations: list[RoundEvaluation]
 
 
 def register_institutions(
@@ -77,14 +116,89 @@ def run_session(
     num_batches: int,
     turn_timeout: float,
     log: Log = print,
-) -> list[TurnResult]:
+    evaluation: EvaluationSettings | None = None,
+    tracker: Tracker | None = None,
+) -> SessionResult:
     """Run every turn in order; each accepted turn adds one Backbone version."""
-    results = []
-    for turn in schedule:
-        result = run_turn(grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log)
-        results.append(result)
+    tracker = tracker or NullTracker()
+    turns: list[TurnResult] = []
+    evaluations: list[RoundEvaluation] = []
+    for round_number, round_turns in groupby(schedule, key=lambda turn: turn.round_number):
+        for turn in round_turns:
+            result = run_turn(grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log)
+            tracker.log_metrics(turn_metrics(result), step=result.checkpoint.version)
+            turns.append(result)
+        if evaluation is not None:
+            round_evaluation = evaluate_institutions(grid, nodes, manager, round_number, evaluation, log)
+            tracker.log_metrics(evaluation_metrics(round_evaluation), step=round_number)
+            evaluations.append(round_evaluation)
     log(f"session complete: coordinator holds Backbone v{manager.latest_version}")
-    return results
+    return SessionResult(turns, evaluations)
+
+
+def turn_metrics(result: TurnResult) -> dict[str, float]:
+    return {
+        "train_loss": result.loss,
+        "train_accuracy": result.accuracy,
+        "activation_change_pct": result.activation_change_pct,
+        "turn_seconds": result.seconds,
+        f"train_accuracy/{result.turn.data_owner_id}": result.accuracy,
+    }
+
+
+def evaluation_metrics(evaluation: RoundEvaluation) -> dict[str, float]:
+    prefix = f"{evaluation.split}_accuracy"
+    return {
+        **{f"{prefix}/{name}": accuracy for name, accuracy in evaluation.accuracy.items()},
+        **{f"{evaluation.split}_loss/{name}": loss for name, loss in evaluation.loss.items()},
+        f"{prefix}_mean": evaluation.mean_accuracy,
+    }
+
+
+def evaluate_institutions(
+    grid: Grid,
+    nodes: dict[str, int],
+    manager: CheckpointManager,
+    round_number: int,
+    settings: EvaluationSettings,
+    log: Log = print,
+) -> RoundEvaluation:
+    state, version = manager.latest()
+    request = ConfigRecord({"backbone_version": version, "split": settings.split, "batch_size": settings.batch_size})
+    messages = [
+        Message(
+            RecordDict({protocol.EVALUATION: request, protocol.BACKBONE: ArrayRecord(torch_state_dict=state)}),
+            dst_node_id=node,
+            message_type=protocol.EVALUATE_HELD_OUT,
+            ttl=settings.timeout,
+        )
+        for node in nodes.values()
+    ]
+    replies = {reply.metadata.src_node_id: reply for reply in grid.send_and_receive(messages, timeout=settings.timeout)}
+    problems = []
+    for name, node in sorted(nodes.items()):
+        if node not in replies:
+            problems.append(f"{name} did not reply within {settings.timeout}s")
+        elif replies[node].has_error():
+            problems.append(f"{name} failed: {replies[node].error.reason}")
+    if problems:
+        raise SessionError(f"round {round_number} evaluation failed: " + "; ".join(problems))
+
+    metrics = {name: replies[node].content[protocol.METRICS] for name, node in sorted(nodes.items())}
+    result = RoundEvaluation(
+        round_number=round_number,
+        backbone_version=int(version),
+        split=settings.split,
+        accuracy={name: float(record["accuracy"]) for name, record in metrics.items()},
+        loss={name: float(record["loss"]) for name, record in metrics.items()},
+        num_samples=int(next(iter(metrics.values()))["num_samples"]),
+    )
+    scores = ", ".join(f"{name} {accuracy:.3f}" for name, accuracy in result.accuracy.items())
+    log(
+        f"round {round_number} {settings.split} accuracy with Backbone v{version} "
+        f"({result.num_samples} samples): {scores}; mean {result.mean_accuracy:.3f}"
+    )
+    return result
 
 
 def run_turn(
@@ -160,9 +274,12 @@ def run_turn(
         accuracy=float(metrics["accuracy"]),
         num_batches=update.num_batches,
         seconds=time.monotonic() - started,
+        noise_std=float(metrics["noise_std"]),
+        activation_change_pct=float(metrics["activation_change_pct"]),
     )
     log(
         f"  done in {result.seconds:.1f}s: {result.num_batches} batches, loss {result.loss:.3f}, "
-        f"accuracy {result.accuracy:.2f} -> Backbone v{checkpoint.version}"
+        f"accuracy {result.accuracy:.2f}, noise std {result.noise_std:g} "
+        f"(activations changed {result.activation_change_pct:.1f}%) -> Backbone v{checkpoint.version}"
     )
     return result

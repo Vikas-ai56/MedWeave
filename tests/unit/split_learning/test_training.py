@@ -232,3 +232,18 @@ def test_computation_graphs_are_freed_after_each_batch(institution, peer, config
 
     assert len(outputs) == 6
     assert all(ref() is None for ref in outputs)
+
+
+def test_evaluate_applies_perturb_to_activations_once_per_batch(institution, peer, config) -> None:
+    batches = synthetic_batches(config, 3)
+    calls: list[torch.Size] = []
+
+    def shift(activations: Tensor) -> Tensor:
+        calls.append(activations.shape)
+        return activations + 100.0
+
+    clean = evaluate(institution, peer, batches)
+    shifted = evaluate(institution, peer, batches, perturb=shift)
+
+    assert len(calls) == 3 and all(shape[1:] == config.head_output_shape for shape in calls)
+    assert shifted.loss != pytest.approx(clean.loss)

@@ -38,7 +38,9 @@ Head.backward, optimizer step <─ d loss / d activations
 
 ### Configuring the model
 
-The dataset is not chosen yet, so nothing here is fixed to one:
+Nothing here is fixed to one dataset. The system uses PathMNIST
+(`coordinator/flower_app/protocol.py`: `in_channels=3`, `num_classes=9`); the
+example shows the defaults:
 
 ```python
 SplitModelConfig(
@@ -111,8 +113,11 @@ institutions = create_institutions(["inst-1", "inst-2", "inst-3", "inst-4"], con
 Each institution gets its own Head, Tail, Head optimizer and Tail optimizer.
 They start with identical weights and share no storage. Pass
 `optimizer_factory` to choose the optimizer, e.g.
-`lambda params: torch.optim.Adam(params, lr=1e-3)`. The default is SGD with
-`lr=0.01`.
+`lambda params: torch.optim.Adam(params, lr=1e-3)`, or the named factory
+`split_learning.config.optimizer_factory("adam" | "sgd", learning_rate)` that
+the coordinator builds from its `optimizer` and `learning-rate` run settings.
+The engine default is SGD with `lr=0.01`; on PathMNIST it stays near the
+majority-class rate for hundreds of batches, so the system uses Adam (lr 1e-3).
 
 ## Using a compute peer
 
@@ -156,8 +161,10 @@ peer.load_backbone(weights_to_state(peer.backbone, arrays), "4")
 ```
 
 Files are read with `torch.load(weights_only=True)`. A load is all or nothing:
-a mismatched architecture, a corrupt file or another institution's checkpoint
-raises `CheckpointError` and leaves the model unchanged.
+a mismatched architecture, a corrupt file, another institution's checkpoint or
+a checkpoint trained with a different optimizer type raises `CheckpointError`
+and leaves the model unchanged (torch itself would accept foreign optimizer
+state and fail only at the next step).
 
 ## Training and evaluation utilities
 
@@ -193,7 +200,8 @@ print(evaluate(institutions["inst-1"], peer, batches))
 - `train_batches(...)` puts both parties in train mode and returns a
   `Summary(loss, accuracy, num_batches, num_samples)` weighted by sample count.
 - `evaluate(...)` runs in eval mode under `no_grad`, updates nothing and
-  restores the previous modes.
+  restores the previous modes. An optional `perturb` noises the activations as
+  in training (default: clean evaluation).
 - `perturb` is the noise hook: `Callable[[Tensor], Tensor]`, applied to the
   detached activations.
 
@@ -233,10 +241,10 @@ These need agreement and have **not** been changed in the shared documents:
    integer and sends `str(version)`.
 3. **`institution_id` in payloads** is not used by the engine. The relay or
    peer service should check it against the coordinator's assignment.
-4. **Dataset contract (Member 3):** loaders should yield float
-   `(B, C, H, W)` inputs and `torch.long` `(B,)` labels, as in the table above.
-5. **Noise hook (Member 3):** `Callable[[Tensor], Tensor]`, returning a tensor
-   of the same shape.
+4. **Dataset contract (Member 3), implemented:** `institution_data` yields
+   float32 `(B, 3, 28, 28)` inputs in [0, 1] and `torch.long` `(B,)` labels.
+5. **Noise hook (Member 3), implemented:** `privacy.GaussianActivationNoise`.
+   See `docs/features/data-and-privacy.md`.
 
 ## Known limitations
 
@@ -244,8 +252,11 @@ These need agreement and have **not** been changed in the shared documents:
 - One batch in flight per party, which matches sequential training.
 - Backbone optimizer state is reset at every turn; only weights are
   checkpointed.
-- The default layers are a small placeholder CNN until the dataset and task are
-  chosen.
+- The layers are a small CNN (conv, optional GroupNorm, ReLU, max-pool per
+  block). The system turns GroupNorm on: on PathMNIST it lifts validation
+  accuracy from 0.654 to 0.762 at the same budget. BatchNorm is deliberately not
+  offered: the shared Backbone's running statistics follow whichever
+  institution trained last and mismatch the other institutions' Heads.
 - Gradients sent to the peer are derived from the labels, a known split-learning
   leakage channel. The noise is a perturbation, not a formal privacy guarantee
   (SPEC §1.7).

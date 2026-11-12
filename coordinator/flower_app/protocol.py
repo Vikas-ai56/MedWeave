@@ -1,8 +1,9 @@
 """What the coordinator and institutions say to each other through Flower.
 
-Flower carries control only: registration, "start your turn" instructions, and
-the Backbone checkpoint in both directions. Per-batch tensors go through the
-relay instead (see `coordinator.relay`).
+Flower carries control only: registration, "start your turn" instructions,
+the Backbone checkpoint in both directions, and the end-of-round evaluation
+request (Backbone out, each institution's held-out metrics back). Per-batch
+tensors go through the relay instead (see `coordinator.relay`).
 """
 
 from dataclasses import asdict, dataclass
@@ -14,17 +15,18 @@ from split_learning.config import SplitModelConfig
 REGISTER = f"{MessageType.QUERY}.register"
 TRAIN_AS_PEER = f"{MessageType.TRAIN}.peer"
 TRAIN_AS_OWNER = f"{MessageType.TRAIN}.owner"
+EVALUATE_HELD_OUT = f"{MessageType.EVALUATE}.held_out"
 
 # RecordDict keys
 TURN = "turn"
 BACKBONE = "backbone"
 UPDATE = "update"
 METRICS = "metrics"
+EVALUATION = "evaluation"
 INFO = "info"
 INSTITUTION_ID = "institution-id"
 
-# Placeholder model shared by every party until the dataset and task are chosen.
-MODEL_CONFIG = SplitModelConfig()
+MODEL_CONFIG = SplitModelConfig(in_channels=3, image_size=(28, 28), num_classes=9, group_norm=True)
 
 
 @dataclass(frozen=True)

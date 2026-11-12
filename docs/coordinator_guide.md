@@ -18,11 +18,15 @@ The coordinator runs a full Phase 1 session on one laptop:
 |---|---|---|
 | Split-learning engine (Head, Backbone, Tail) | Member 2 | Done, used by the coordinator |
 | Scheduler, checkpoints, relay, Flower orchestration | Member 1 | Done, tested end to end |
-| Dataset loading and activation noise | Member 3 | **Not yet.** Random placeholder data, no noise |
+| Dataset loading and activation noise | Member 3 | Done: PathMNIST shards per institution, Gaussian activation noise (`docs/features/data-and-privacy.md`) |
 | Dashboard, database, Docker | Member 4 | **Not yet** |
 
-Because the data is random, the loss stays around 0.69 and accuracy around
-50%. The run proves the workflow, not the learning.
+Institutions train on their own PathMNIST shard (9 classes) with Adam
+(lr 0.001) and a small CNN with GroupNorm. Each turn is one pass over the
+owner's shard (351 batches of 64, about 12 s), and after every round each
+institution scores its own Head and Tail with the latest Backbone on the public
+validation split. The default 2 rounds take about 2 minutes and reach about
+0.76 mean validation accuracy (also with noise 0.25).
 
 ## 2. Setup
 
@@ -35,8 +39,12 @@ git checkout coordinator
 
 python3 -m venv venv                  # must be called "venv", at the repo root
 source venv/bin/activate
-pip install torch numpy flwr pytest
+pip install torch numpy flwr pytest mlflow
 ```
+
+The first `run_local.sh` also downloads PathMNIST (205 MB, once per machine,
+into `~/.medweave/data` or `$MEDWEAVE_DATA_DIR`). To do that ahead of a demo:
+`python -m institution_data prepare`.
 
 Tested with Python 3.14.7, torch 2.15 and flwr 1.43. The run script looks for
 the virtual environment at `venv/` in the repo root.
@@ -56,11 +64,16 @@ Expected output (other log lines removed):
 [coordinator] registered institutions: inst-1, inst-2, inst-3, inst-4
 [coordinator] initialised Backbone v0
 [coordinator] round 1: inst-1 trains, inst-2 computes, Backbone v0
-[coordinator]   done in 6.1s: 5 batches, loss 0.686, accuracy 0.57 -> Backbone v1
+[coordinator]   done in 9.2s: 351 batches, loss 1.603, accuracy 0.42, noise std 0 (activations changed 0.0%) -> Backbone v1
 [coordinator] round 1: inst-2 trains, inst-3 computes, Backbone v1
 ...
+[coordinator] round 1 val accuracy with Backbone v4 (10004 samples): inst-1 0.372, inst-2 0.528, inst-3 0.552, inst-4 0.572; mean 0.506
 [coordinator] session complete: coordinator holds Backbone v4
+run 2869353954842831473: finished:completed
 ```
+
+The script's exit code follows the last line: 0 only for `finished:completed`.
+A failed turn or evaluation ends the run as `finished:failed` and exit 1.
 
 Good to know:
 
@@ -127,32 +140,13 @@ What stays where:
 Both connection points are in `coordinator/flower_app/client_app.py`, in
 `train_own_data()`.
 
-**Data.** Replace the call to `placeholder_batches(...)` with your loader. It
-must return a list (or other iterable) of `(inputs, labels)` per batch:
-
-| Tensor | Shape | dtype |
-|---|---|---|
-| `inputs` | `(B, C, H, W)` | float |
-| `labels` | `(B,)`, values in `0 .. num_classes-1` | `torch.long` |
-
-Each institution should load only its own partition. The institution's id is
-available as `me` (`"inst-1"`, ...).
-
-**Noise.** Replace `perturb=None` with a function
-`Callable[[Tensor], Tensor]`:
-
-- It receives the Head's activations, shape `(B, *MODEL_CONFIG.head_output_shape)`.
-- It must return a tensor of the **same shape**.
-- It is applied just before the activations are sent. Gradients pass straight
-  through it, which is exact for additive noise.
-
-**Model shape.** When the dataset is chosen, update `MODEL_CONFIG` in
-`coordinator/flower_app/protocol.py` to match: `in_channels`, `image_size`
-and `num_classes`. It is currently `SplitModelConfig()`: grayscale, 28×28,
-2 classes. Every party reads this one value, so they always agree.
-
-**Batches per turn.** Set `batches-per-turn` (see section 6) to match your
-partition size.
+Done. In `train_own_data()` the data owner opens only its own shard
+(`institution_data.open_institution_training`) and builds the turn's batches
+from `TurnInfo.round_number` (`training_loader`): float `(B, 3, 28, 28)` in
+[0, 1] and `torch.long` `(B,)` labels in 0..8. It perturbs the activations with
+`privacy.GaussianActivationNoise` before sending them and reports `noise_std`
+and `activation_change_pct` with its metrics. `MODEL_CONFIG` is PathMNIST:
+3×28×28, 9 classes. Details: `docs/features/data-and-privacy.md`.
 
 ### Member 2: split-learning engine
 
@@ -176,11 +170,15 @@ gives exactly the same loss and weights as your in-process
 - `CheckpointManager.commit()` returns a `CheckpointRecord` with `version`,
   `storage_path`, `created_by` and `created_at`. This matches the
   `model_checkpoints` table.
-- `run_session()` returns a `TurnResult` per turn with `turn` (round, data
-  owner, compute peer), `checkpoint`, `loss`, `accuracy`, `num_batches` and
-  `seconds`. This covers `compute_assignments` and `training_events`.
-- Nothing is written to a database yet. Tell Member 1 how you want these
-  passed to you.
+- `run_session()` returns a `SessionResult`: `turns` holds a `TurnResult` per
+  turn with `turn` (round, data owner, compute peer), `checkpoint`, `loss`,
+  `accuracy`, `num_batches`, `seconds`, `noise_std` and
+  `activation_change_pct`; `evaluations` holds a `RoundEvaluation` per round
+  with each institution's held-out `accuracy` and `loss`. This covers
+  `compute_assignments` and `training_events`.
+- Every session is also recorded in MLflow (`docs/features/experiment-tracking.md`):
+  the dashboard can read runs, metrics and artifacts from that store instead of
+  a new export. Nothing is written to the project database yet.
 
 **Live status for the dashboard.** `run_session(..., log=...)` takes a
 function that receives each status line. It currently prints them; it can be
@@ -227,18 +225,27 @@ Settings are in `[tool.flwr.app.config]` in
 | Setting | Default | Meaning |
 |---|---|---|
 | `num-institutions` | 4 | How many institutions the coordinator waits for |
-| `num-rounds` | 1 | Each round gives every institution one turn |
-| `batches-per-turn` | 5 | Batches each data owner trains per turn |
+| `num-rounds` | 2 | Each round gives every institution one turn |
+| `batches-per-turn` | 351 | Batches each data owner trains per turn (351 × 64 = one pass over a 22,499-sample shard) |
 | `turn-timeout` | 300.0 | Seconds before a turn is treated as failed |
 | `registration-timeout` | 120.0 | Seconds to wait for all institutions to connect |
 | `relay-host` | `127.0.0.1` | Address the relay listens on |
 | `relay-port` | 8765 | Relay port |
 | `relay-url` | `http://127.0.0.1:8765` | Address the institutions use to reach the relay |
+| `partition-seed` | 0 | Which provisioned PathMNIST partition and batch order |
+| `batch-size` | 64 | Training batch size |
+| `noise-std` | 0.0 | Gaussian noise std on Head activations (0 = no noise) |
+| `noise-seed` | 0 | Base seed for the noise |
+| `optimizer` | `adam` | Optimizer for Head, Tail and Backbone (`adam` or `sgd`) |
+| `learning-rate` | 0.001 | Learning rate for that optimizer |
+| `evaluation-split` | `val` | Held-out split each institution scores after every round (`val`, `test`, or `none` to skip) |
+| `evaluation-batch-size` | 512 | Batch size for that evaluation |
+| `tracking` | `mlflow` | Record the session in MLflow (`python -m tracking ui` to view), or `none` |
 
 ## 7. Tests
 
 ```bash
-python -m pytest tests/unit -v               # everything (162 tests)
+python -m pytest tests -v                    # everything (218 tests)
 python -m pytest tests/unit/coordinator -v   # coordinator only
 ```
 
@@ -248,16 +255,13 @@ institution code and a real HTTP relay, without starting Flower processes.
 
 ## 8. Known limitations
 
-- **Placeholder data and model** until Member 3's loader exists and the
-  dataset is chosen.
-- **No noise yet.** The `perturb` hook is ready (section 5).
 - **No TLS.**
 - **No disconnect handling.** If a turn fails, the session stops and the
   Backbone is left unchanged. Skipping or retrying an offline institution is
   not built yet.
 - **No database yet** (section 5, Member 4).
-- **No held-out test accuracy.** Each turn reports training loss and accuracy
-  only.
+- **Test-set ownership is undecided**, so evaluation uses the validation split
+  by default; `evaluation-split=test` works but is not the agreed protocol.
 - A restarted session continues from the latest Backbone but starts the turn
   order from the first turn again.
 
@@ -271,5 +275,8 @@ institution code and a real HTTP relay, without starting Flower processes.
 | `only N of 4 institutions connected` | A SuperNode failed to start. Check `.medweave_local/logs/inst-N.log`. |
 | `turn ... not committed: ...` | The message lists what went wrong on **both** sides. Usually one side's real error caused the other side to time out. |
 | `StaleUpdateError` | A Backbone update was trained from an older version than the latest. Nothing was saved. |
+| `no partition manifest` | The institution's data is not provisioned for that `partition-seed`. Run `python -m institution_data prepare --seed N`. |
+| `checkpoint was trained with SGD, institution uses Adam` | The `optimizer` setting changed since the institution's last checkpoint. Start fresh: `rm -rf .medweave_local`. |
+| `Backbone checkpoint does not match the configured architecture` | The model changed (e.g. GroupNorm was added) since the stored checkpoints were made. Run `rm -rf .medweave_local`. |
 | Want a clean start from v0 | `rm -rf .medweave_local` |
 | Run is slow the first time | Normal. Flower builds its environment once (about 40 seconds). |

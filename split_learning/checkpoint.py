@@ -3,6 +3,11 @@
 The Backbone checkpoint is canonical and owned by the coordinator; Head and
 Tail checkpoints stay with their institution. Files are plain `torch.save`
 dictionaries and are always read with `weights_only=True`.
+
+An institution checkpoint records its optimizer type; loading it into an
+institution with a different optimizer type raises `CheckpointError`, because
+torch would accept the foreign state and only fail at the next `step()`.
+Checkpoints saved before the type was recorded load without that check.
 """
 
 import copy
@@ -72,6 +77,7 @@ def save_institution_checkpoint(path: str | Path, institution: "Institution") ->
     torch.save(
         {
             "institution_id": institution.institution_id,
+            "optimizer": type(institution.head_optimizer).__name__,
             "head": institution.head.state_dict(),
             "tail": institution.tail.state_dict(),
             "head_optimizer": institution.head_optimizer.state_dict(),
@@ -89,6 +95,12 @@ def load_institution_checkpoint(path: str | Path, institution: "Institution") ->
         raise CheckpointError(
             f"checkpoint belongs to {checkpoint['institution_id']!r}, "
             f"not {institution.institution_id!r}"
+        )
+    current_optimizer = type(institution.head_optimizer).__name__
+    if checkpoint.get("optimizer", current_optimizer) != current_optimizer:
+        raise CheckpointError(
+            f"checkpoint was trained with {checkpoint['optimizer']}, institution uses {current_optimizer}; "
+            "start from a fresh institution state"
         )
     parts = [
         (institution.head, checkpoint["head"], institution.head_optimizer, checkpoint["head_optimizer"], "Head"),

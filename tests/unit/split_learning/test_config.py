@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from split_learning.backbone import build_backbone
-from split_learning.config import SplitModelConfig
+from split_learning.config import SplitModelConfig, optimizer_factory
 from split_learning.head import build_head
 from split_learning.tail import build_tail
 
@@ -50,3 +50,14 @@ def test_moving_a_block_moves_the_split_point() -> None:
 def test_invalid_config_is_rejected(kwargs: dict, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         SplitModelConfig(**kwargs)
+
+
+def test_optimizer_factory_builds_the_named_optimizer() -> None:
+    parameters = [torch.nn.Parameter(torch.ones(2))]
+    adam = optimizer_factory("adam", 0.001)(parameters)
+    assert isinstance(adam, torch.optim.Adam) and adam.param_groups[0]["lr"] == 0.001
+    assert isinstance(optimizer_factory("sgd", 0.1)(parameters), torch.optim.SGD)
+    with pytest.raises(ValueError, match="optimizer must be one of"):
+        optimizer_factory("rmsprop", 0.1)
+    with pytest.raises(ValueError, match="learning_rate"):
+        optimizer_factory("adam", 0.0)

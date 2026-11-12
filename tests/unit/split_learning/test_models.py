@@ -25,3 +25,15 @@ def test_building_does_not_disturb_global_rng(config: SplitModelConfig) -> None:
     torch.manual_seed(123)
     build_head(config)
     assert torch.equal(torch.rand(1), expected)
+
+
+def test_group_norm_keeps_shapes_and_normalises_each_block() -> None:
+    config = SplitModelConfig(in_channels=3, image_size=(28, 28), num_classes=9, group_norm=True)
+    head, backbone = build_head(config), build_backbone(config)
+
+    activations = head(torch.rand(2, *config.input_shape))
+    output = backbone(activations)
+
+    assert activations.shape[1:] == config.head_output_shape and output.shape[1:] == config.backbone_output_shape
+    norms = [m for m in [*head.modules(), *backbone.modules()] if isinstance(m, torch.nn.GroupNorm)]
+    assert [m.num_groups for m in norms] == [4, 8, 8]

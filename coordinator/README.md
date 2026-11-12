@@ -17,6 +17,9 @@ for each turn in the schedule:
                relay  <── activations / gradients ──>  (per batch, via HTTP)
   Backbone vN+1 <── updated weights ──────────── compute peer
   commit vN+1
+after each round:
+  Backbone ───── evaluate.held_out ────────────>  every institution scores its own
+                 <── loss / accuracy only ─────   Head + Tail on the public val split
 ```
 
 - **Flower carries control:** registration, turn instructions, and the
@@ -60,7 +63,11 @@ coordinator/flower_app/run_local.sh --run-config "num-rounds=2"   # override set
 
 Settings live in `[tool.flwr.app.config]` in `flower_app/pyproject.toml`:
 `num-institutions`, `num-rounds`, `batches-per-turn`, `turn-timeout`,
-`registration-timeout`, `relay-host`, `relay-port`, `relay-url`.
+`registration-timeout`, `relay-host`, `relay-port`, `relay-url`,
+`partition-seed`, `batch-size`, `noise-std`, `noise-seed`, `optimizer`,
+`learning-rate`, `evaluation-split`, `evaluation-batch-size`.
+`run_local.sh` exits 0 only when the SuperLink reports the run as
+`finished:completed`.
 
 ## Tests
 
@@ -74,11 +81,9 @@ Flower processes. `run_local.sh` is the end-to-end check with real processes.
 
 ## Known limitations
 
-- **Placeholder data and model.** Institutions train on random tensors with
-  the default `SplitModelConfig` until Member 3's loaders exist and the
-  dataset is chosen.
-- **No noise yet.** `perturb=None` in `client_app.py` is where Member 3's
-  activation noise plugs in.
+- **Data and noise come from Member 3's packages.** Each data owner trains on
+  its own PathMNIST shard with Gaussian activation noise (`noise-std`); see
+  `docs/features/data-and-privacy.md`.
 - **No TLS.** Everything runs with `--insecure` over plain HTTP. TLS is
   needed before the multi-laptop deployment.
 - **No disconnect handling.** A failed turn stops the session without

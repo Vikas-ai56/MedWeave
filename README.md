@@ -54,7 +54,10 @@ MedWeave/
 ├── coordinator/        # Training coordination and model management
 ├── institutional_client/ # Local institutional training logic
 ├── split_learning/     # Head, Backbone and Tail implementation
-├── privacy/            # Activation noise and related utilities
+├── institution_data/  # PathMNIST loading, institutional partitions, DataLoaders
+├── privacy/            # Activation noise and perturbation statistics
+├── experiments/        # Noise comparison runner and results
+├── tracking/           # Experiment tracking (MLflow behind a small interface)
 ├── dashboard/          # Monitoring interface
 ├── tests/              # Unit and integration tests
 ├── docker/             # Container configuration

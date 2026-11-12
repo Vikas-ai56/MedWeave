@@ -10,8 +10,20 @@ Shape = tuple[int, ...]
 OptimizerFactory = Callable[[Iterable[nn.Parameter]], Optimizer]
 
 
+OPTIMIZERS: dict[str, type[Optimizer]] = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}
+
+
 def default_optimizer(parameters: Iterable[nn.Parameter]) -> Optimizer:
     return torch.optim.SGD(parameters, lr=0.01)
+
+
+def optimizer_factory(name: str, learning_rate: float) -> OptimizerFactory:
+    if name not in OPTIMIZERS:
+        raise ValueError(f"optimizer must be one of {sorted(OPTIMIZERS)}, got {name!r}")
+    if not learning_rate > 0:
+        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+    optimizer_class = OPTIMIZERS[name]
+    return lambda parameters: optimizer_class(parameters, lr=learning_rate)
 
 
 @dataclass(frozen=True)
@@ -21,7 +33,11 @@ class SplitModelConfig:
     Each entry in `head_channels` and `backbone_channels` adds one conv block
     (3x3 conv, ReLU, 2x2 max-pool) with that many output channels, so moving an
     entry between the two tuples moves the split point. `tail_hidden` adds
-    hidden linear layers to the Tail.
+    hidden linear layers to the Tail. `group_norm` adds GroupNorm after each
+    conv. GroupNorm normalises each sample on its own and keeps no running
+    statistics; BatchNorm was rejected because the shared Backbone's running
+    statistics then follow whichever institution trained last and mismatch the
+    other institutions' Heads at evaluation (docs/DECISIONS.md).
     """
 
     in_channels: int = 1
@@ -31,6 +47,7 @@ class SplitModelConfig:
     tail_hidden: tuple[int, ...] = ()
     num_classes: int = 2
     seed: int = 0
+    group_norm: bool = False
 
     def __post_init__(self) -> None:
         if self.in_channels < 1:

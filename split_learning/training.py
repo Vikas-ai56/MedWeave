@@ -71,14 +71,18 @@ def train_batches(
     return summarize(steps)
 
 
-def evaluate(institution: Institution, peer: ComputePeer, batches: Iterable[Batch]) -> Summary:
-    """Score batches in eval mode without updating any weights."""
+def evaluate(
+    institution: Institution, peer: ComputePeer, batches: Iterable[Batch], perturb: Perturb | None = None
+) -> Summary:
+    """Score batches in eval mode without updating any weights; `perturb` noises activations as in training."""
     version = peer.version or ""  # an unloaded peer rejects the call itself
+    steps = []
     with evaluation_mode(institution, peer):
-        steps = [
-            institution.evaluate_tail(peer.infer(institution.encode(inputs), version), labels)
-            for inputs, labels in batches
-        ]
+        for inputs, labels in batches:
+            activations = institution.encode(inputs)
+            if perturb is not None:
+                activations = perturb(activations)
+            steps.append(institution.evaluate_tail(peer.infer(activations, version), labels))
     return summarize(steps)
 
 
