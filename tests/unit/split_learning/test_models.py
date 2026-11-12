@@ -19,6 +19,16 @@ def test_same_config_gives_identical_initial_weights(config: SplitModelConfig) -
             assert torch.equal(a, b)
 
 
+def test_default_layers_keep_their_checkpoint_keys() -> None:
+    config = SplitModelConfig()
+
+    assert list(build_head(config).state_dict()) == ["layers.0.weight", "layers.0.bias"]
+    assert list(build_backbone(config).state_dict()) == [
+        "layers.0.weight", "layers.0.bias", "layers.3.weight", "layers.3.bias",
+    ]
+    assert list(build_tail(config).state_dict()) == ["layers.2.weight", "layers.2.bias"]
+
+
 def test_building_does_not_disturb_global_rng(config: SplitModelConfig) -> None:
     torch.manual_seed(123)
     expected = torch.rand(1)

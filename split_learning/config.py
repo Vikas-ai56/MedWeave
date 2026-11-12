@@ -22,6 +22,11 @@ class SplitModelConfig:
     (3x3 conv, ReLU, 2x2 max-pool) with that many output channels, so moving an
     entry between the two tuples moves the split point. `tail_hidden` adds
     hidden linear layers to the Tail.
+
+    `batch_norm` inserts BatchNorm2d after every conv, `backbone_final_pool=False`
+    drops the max-pool from the last Backbone block, and `tail_dropout` adds
+    Dropout before the Tail's classifier. Their defaults leave the layer
+    indices, and so the checkpoint keys, unchanged.
     """
 
     in_channels: int = 1
@@ -31,12 +36,17 @@ class SplitModelConfig:
     tail_hidden: tuple[int, ...] = ()
     num_classes: int = 2
     seed: int = 0
+    batch_norm: bool = False
+    backbone_final_pool: bool = True
+    tail_dropout: float = 0.0
 
     def __post_init__(self) -> None:
         if self.in_channels < 1:
             raise ValueError(f"in_channels must be positive, got {self.in_channels}")
         if self.num_classes < 2:
             raise ValueError(f"num_classes must be at least 2, got {self.num_classes}")
+        if not 0.0 <= self.tail_dropout < 1.0:
+            raise ValueError(f"tail_dropout must be in [0, 1), got {self.tail_dropout}")
         if not self.head_channels or not self.backbone_channels:
             raise ValueError("head_channels and backbone_channels need at least one block each")
         widths = (*self.head_channels, *self.backbone_channels, *self.tail_hidden)
@@ -56,12 +66,15 @@ class SplitModelConfig:
 
     @property
     def backbone_output_shape(self) -> Shape:
-        return conv_blocks_output_shape(self.head_output_shape, self.backbone_channels)
+        return conv_blocks_output_shape(
+            self.head_output_shape, self.backbone_channels, pool_last=self.backbone_final_pool
+        )
 
 
-def conv_blocks_output_shape(input_shape: Shape, channels: tuple[int, ...]) -> Shape:
+def conv_blocks_output_shape(input_shape: Shape, channels: tuple[int, ...], pool_last: bool = True) -> Shape:
     _, height, width = input_shape
-    for _ in channels:
+    pools = len(channels) if pool_last else len(channels) - 1
+    for _ in range(pools):
         height, width = height // 2, width // 2
     return (channels[-1], height, width)
 
