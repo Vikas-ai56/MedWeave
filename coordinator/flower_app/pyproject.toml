@@ -1,0 +1,31 @@
+# Flower app definition for the coordinator. Run it with ./run_local.sh.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "medweave-coordinator"
+version = "0.1.0"
+description = "MedWeave coordinator: sequential U-shaped split learning with rotating compute peers"
+license = "Apache-2.0"
+dependencies = ["flwr>=1.43"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.flwr.app]
+publisher = "medweave"
+
+[tool.flwr.app.components]
+serverapp = "server_app:app"
+clientapp = "client_app:app"
+
+[tool.flwr.app.config]
+num-institutions = 4
+num-rounds = 1
+batches-per-turn = 5
+turn-timeout = 300.0
+registration-timeout = 120.0
+relay-host = "127.0.0.1"
+relay-port = 8765
+relay-url = "http://127.0.0.1:8765"
