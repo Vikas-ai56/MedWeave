@@ -1,6 +1,7 @@
 """MedWeavePathCNN-v1 on synthetic PathMNIST-shaped tensors (no dataset download)."""
 
 import copy
+import dataclasses
 
 import pytest
 import torch
@@ -20,7 +21,7 @@ from split_learning.config import SplitModelConfig
 from split_learning.errors import CheckpointError
 from split_learning.head import build_head
 from split_learning.institution import Institution, create_institutions
-from split_learning.path_cnn import path_cnn_v1_config
+from split_learning.path_cnn import path_cnn_v1_config, path_cnn_v2_config
 from split_learning.tail import build_tail
 from split_learning.training import evaluate, train_batches, train_step
 
@@ -266,3 +267,35 @@ def test_training_lowers_loss_and_evaluation_is_deterministic(v1: SplitModelConf
 
     assert evaluate(institution, peer, batches) == evaluate(institution, peer, batches)
     assert evaluate(institution, peer, batches).loss < first.loss
+
+
+def test_v2_doubles_the_convs_but_keeps_the_boundary_shapes(v1: SplitModelConfig) -> None:
+    v2 = path_cnn_v2_config()
+    head, backbone, tail = build_head(v2), build_backbone(v2), build_tail(v2)
+    params = sum(p.numel() for module in (head, backbone, tail) for p in module.parameters())
+
+    assert layer_names(head) == ["Conv2d", "BatchNorm2d", "ReLU"] * 2 + ["MaxPool2d"]
+    assert layer_names(backbone) == (
+        ["Conv2d", "BatchNorm2d", "ReLU"] * 2 + ["MaxPool2d"] + ["Conv2d", "BatchNorm2d", "ReLU"] * 2
+    )
+    assert (v2.head_output_shape, v2.backbone_output_shape) == (v1.head_output_shape, v1.backbone_output_shape)
+    assert 280_000 < params < 300_000
+    output = backbone(head(torch.randn(2, 3, 28, 28)))
+    assert output.shape == (2, 128, 7, 7) and tail(output).shape == (2, 9)
+    assert path_cnn_v2_config(head_stages=2).head_output_shape == (64, 7, 7)
+
+
+def test_v1_backbone_checkpoint_is_rejected_by_a_v2_peer(v1: SplitModelConfig, tmp_path) -> None:
+    save_backbone_checkpoint(tmp_path / "v1.pt", build_backbone(v1).state_dict(), version="1")
+    with pytest.raises(CheckpointError, match="does not match"):
+        loaded_peer(path_cnn_v2_config(), *read_backbone_checkpoint(tmp_path / "v1.pt"))
+
+
+def test_group_norm_variant_trains_and_keeps_no_running_statistics(v1: SplitModelConfig) -> None:
+    grouped = dataclasses.replace(v1, batch_norm=False, group_norm=True)
+    institution, peer = Institution("inst-1", grouped, sgd), loaded_peer(grouped)
+
+    assert layer_names(build_head(grouped)) == ["Conv2d", "GroupNorm", "ReLU", "MaxPool2d"]
+    assert list(peer.backbone.buffers()) == [] and list(institution.head.buffers()) == []
+    metrics = train_step(institution, peer, *synthetic_batches(grouped, 1)[0])
+    assert metrics.total == BATCH_SIZE

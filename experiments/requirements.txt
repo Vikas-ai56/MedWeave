@@ -1,0 +1,3 @@
+-r ../split_learning/requirements.txt
+mlflow>=3.0
+scikit-learn

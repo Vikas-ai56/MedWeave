@@ -1,12 +1,19 @@
-"""MedWeavePathCNN-v1: the split CNN for PathMNIST (3x28x28 RGB, 9 classes).
+"""Split CNNs for PathMNIST (3x28x28 RGB, 9 classes).
+
+MedWeavePathCNN-v1:
 
     stage 1   Conv(3->32)   BN ReLU MaxPool   [B, 32, 14, 14]
     stage 2   Conv(32->64)  BN ReLU MaxPool   [B, 64, 7, 7]
     stage 3   Conv(64->128) BN ReLU           [B, 128, 7, 7]
     tail      AvgPool(1) Flatten Dropout(0.2) Linear(128->9) -> logits
 
-By default stage 1 is the Head and stages 2-3 are the Backbone.
+MedWeavePathCNN-v2 has the same stages with two (Conv, BN, ReLU) units each,
+about 0.29M parameters, and the same boundary shapes as v1.
+
+By default stage 1 is the Head and the remaining stages are the Backbone.
 """
+
+from dataclasses import replace
 
 from split_learning.config import SplitModelConfig
 
@@ -38,3 +45,8 @@ def path_cnn_v1_config(head_stages: int = PATH_CNN_V1_HEAD_STAGES, seed: int = 0
         backbone_final_pool=False,
         tail_dropout=0.2,
     )
+
+
+def path_cnn_v2_config(head_stages: int = PATH_CNN_V1_HEAD_STAGES, seed: int = 0) -> SplitModelConfig:
+    """MedWeavePathCNN-v2: v1 with two conv units per stage. Not checkpoint-compatible with v1."""
+    return replace(path_cnn_v1_config(head_stages, seed), convs_per_block=2)

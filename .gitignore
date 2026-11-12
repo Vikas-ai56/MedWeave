@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# experiment data and tracking
+data/
+mlflow.db
+mlruns/
+mlartifacts/
+wandb/

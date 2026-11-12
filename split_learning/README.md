@@ -27,7 +27,7 @@ Head.backward, optimizer step <─ d loss / d activations
 | File | Contents |
 | --- | --- |
 | `config.py` | `SplitModelConfig`: input shape, widths, split point, classes, seed |
-| `path_cnn.py` | `path_cnn_v1_config()`: the MedWeavePathCNN-v1 preset for PathMNIST |
+| `path_cnn.py` | `path_cnn_v1_config()`, `path_cnn_v2_config()`: the PathMNIST presets |
 | `head.py`, `backbone.py`, `tail.py` | The three `nn.Module`s and their `build_*` factories |
 | `layers.py` | The conv block shared by Head and Backbone |
 | `forward.py`, `backward.py` | Single-party pass functions (stateless) |
@@ -54,6 +54,8 @@ SplitModelConfig(
     batch_norm=False,              # BatchNorm2d after every conv
     backbone_final_pool=True,      # False: last Backbone block keeps its spatial size
     tail_dropout=0.0,              # Dropout before the Tail's classifier, in [0, 1)
+    group_norm=False,              # GroupNorm(8 groups) after every conv, instead of BatchNorm
+    convs_per_block=1,             # (conv, norm, ReLU) units per block before its pool
 )
 ```
 
@@ -63,9 +65,16 @@ give the per-sample shapes that cross each boundary. An invalid configuration,
 such as an image too small for the number of pooling blocks, raises
 `ValueError` when the config is created.
 
-The last three fields only add layers when they are switched on, so the
+The fields after `seed` only add layers when they are switched on, so the
 default placeholder CNN keeps the same `state_dict` keys as before they were
-introduced.
+introduced. `batch_norm` and `group_norm` cannot both be on, and `group_norm`
+needs every conv width to be divisible by 8.
+
+**BatchNorm or GroupNorm.** BatchNorm keeps running statistics, so the
+Backbone's statistics belong to whichever institution trained it last.
+GroupNorm normalises each sample on its own, so it has no running statistics
+and behaves the same in training and evaluation, and when data differs between
+institutions.
 
 ## MedWeavePathCNN-v1 (PathMNIST)
 
@@ -148,6 +157,22 @@ A Backbone checkpoint only fits the split point it was trained with. Loading a
 `head_stages=1` checkpoint into a `head_stages=2` peer raises
 `CheckpointError`. Every participant must therefore use the same config.
 
+### MedWeavePathCNN-v2
+
+`path_cnn_v2_config(head_stages=1, seed=0)` gives v1 with two (Conv, BN, ReLU)
+units per stage (`convs_per_block=2`):
+
+| Component | Layers | Output | Parameters |
+| --- | --- | --- | --- |
+| Head | 2 × (Conv 3×3, BN, ReLU) at 32 channels, MaxPool | `[B, 32, 14, 14]` | 10,272 |
+| Backbone | 2 × (Conv 3×3, BN, ReLU) at 64, MaxPool; 2 × (Conv 3×3, BN, ReLU) at 128 | `[B, 128, 7, 7]` | 277,632 |
+| Tail | as v1 | `[B, 9]` | 1,161 |
+
+The boundary shapes match v1's, so nothing else in the engine changes. The
+receptive field grows from 18×18 to 32×32 pixels, which covers the whole 28×28 patch.
+v2 checkpoints do not load into v1 models and v1 checkpoints do not load into
+v2 models; loading one raises `CheckpointError`.
+
 ## How the forward pass works
 
 1. `Institution.head_forward(batch_id, inputs)` runs the Head and returns a
@@ -202,7 +227,10 @@ Each institution gets its own Head, Tail, Head optimizer and Tail optimizer.
 They start with identical weights and share no storage. Pass
 `optimizer_factory` to choose the optimizer, e.g.
 `lambda params: torch.optim.Adam(params, lr=1e-3)`. The default is SGD with
-`lr=0.01`.
+`lr=0.01`. Pass `loss_fn` to change the training loss, e.g.
+`functools.partial(F.cross_entropy, label_smoothing=0.1)`. It must take
+`(logits, labels)` and return a scalar. `evaluate_tail` always reports plain
+cross-entropy.
 
 ## Using a compute peer
 

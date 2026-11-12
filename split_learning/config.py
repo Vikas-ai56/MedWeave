@@ -7,6 +7,7 @@ from torch import nn
 from torch.optim import Optimizer
 
 Shape = tuple[int, ...]
+NORM_GROUPS = 8
 OptimizerFactory = Callable[[Iterable[nn.Parameter]], Optimizer]
 
 
@@ -23,10 +24,13 @@ class SplitModelConfig:
     entry between the two tuples moves the split point. `tail_hidden` adds
     hidden linear layers to the Tail.
 
-    `batch_norm` inserts BatchNorm2d after every conv, `backbone_final_pool=False`
-    drops the max-pool from the last Backbone block, and `tail_dropout` adds
-    Dropout before the Tail's classifier. Their defaults leave the layer
-    indices, and so the checkpoint keys, unchanged.
+    `batch_norm` inserts BatchNorm2d after every conv; `group_norm` inserts
+    GroupNorm with `NORM_GROUPS` groups instead, which keeps no running
+    statistics. `convs_per_block` repeats the (conv, norm, ReLU) unit inside
+    each block before its pool. `backbone_final_pool=False` drops the max-pool
+    from the last Backbone block, and `tail_dropout` adds Dropout before the
+    Tail's classifier. The defaults leave the layer indices, and so the
+    checkpoint keys, unchanged.
     """
 
     in_channels: int = 1
@@ -39,6 +43,8 @@ class SplitModelConfig:
     batch_norm: bool = False
     backbone_final_pool: bool = True
     tail_dropout: float = 0.0
+    group_norm: bool = False
+    convs_per_block: int = 1
 
     def __post_init__(self) -> None:
         if self.in_channels < 1:
@@ -47,11 +53,18 @@ class SplitModelConfig:
             raise ValueError(f"num_classes must be at least 2, got {self.num_classes}")
         if not 0.0 <= self.tail_dropout < 1.0:
             raise ValueError(f"tail_dropout must be in [0, 1), got {self.tail_dropout}")
+        if self.convs_per_block < 1:
+            raise ValueError(f"convs_per_block must be positive, got {self.convs_per_block}")
+        if self.batch_norm and self.group_norm:
+            raise ValueError("choose at most one of batch_norm and group_norm")
         if not self.head_channels or not self.backbone_channels:
             raise ValueError("head_channels and backbone_channels need at least one block each")
         widths = (*self.head_channels, *self.backbone_channels, *self.tail_hidden)
         if any(width < 1 for width in widths):
             raise ValueError(f"channel and hidden widths must be positive, got {widths}")
+        conv_widths = (*self.head_channels, *self.backbone_channels)
+        if self.group_norm and any(width % NORM_GROUPS for width in conv_widths):
+            raise ValueError(f"group_norm needs channel widths divisible by {NORM_GROUPS}, got {conv_widths}")
         if min(self.backbone_output_shape[1:]) < 1:
             blocks = len(self.head_channels) + len(self.backbone_channels)
             raise ValueError(f"image_size {self.image_size} is too small for {blocks} pooling blocks")
