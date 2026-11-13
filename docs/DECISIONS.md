@@ -131,3 +131,65 @@ data paths); a tracking server (not needed for one laptop; the guide puts server
 **Risks / edge cases found:** The ServerApp's working directory is Flower's app folder, so the store and
 artifact locations are absolute. Real runs match untracked runs exactly (0.762/0.766/0.564; 0.763).
 MLflow 3.18 on Python 3.14 logs a SQLAlchemy deprecation warning from its own code.
+
+## [2026-11-13] GroupNorm uses a fixed 8 groups
+**Decision:** `NORM_GROUPS = 8` for every GroupNorm layer (Member 2's setting), replacing Member 3's
+`channels // 4`. `conv_blocks`, `Head` and `Backbone` take every norm/pool option keyword-only.
+**Why:** It is the setting behind the measured 0.883 test accuracy (docs/integration_plan.md).
+Keyword-only options stop a positional call from silently swapping `batch_norm` and `group_norm`,
+which the two branches had in different positions.
+**Rejected alternatives:** 4 channels per group.
+**Risks / edge cases found:** Channel widths must be divisible by 8 (checked in `SplitModelConfig`).
+Member 3 to confirm.
+
+## [2026-11-13] MedWeavePathCNN-v1 with GroupNorm is the system model
+**Decision:** `MODEL_CONFIG = path_cnn_v1_config(norm="group")`. Boundary tensor `[B, 32, 14, 14]`.
+**Why:** Best measured model; GroupNorm keeps no running statistics, so the shared Backbone does not
+carry the last institution's BatchNorm statistics.
+**Risks / edge cases found:** Old Backbone and institution checkpoints no longer load; start from a
+clean state directory. Each batch moves about 1.6 MB each way.
+
+## [2026-11-13] One learning rate per turn, computed by the coordinator
+**Decision:** The coordinator turns `learning-rate`, `lr-schedule` (`cosine`) and `lr-warmup` (0.05)
+into one rate per turn and sends it in `TurnInfo.learning_rate`. Owner and peer both train at it; the
+owner sets it after loading its checkpoint. The schedule maths is `split_learning/schedule.py`.
+**Why:** One new field, no change to the relay or the per-batch protocol, and the coordinator already
+knows the turn index and the total.
+**Rejected alternatives:** a per-batch schedule (needs each party to count batches across turns).
+**Risks / edge cases found:** Loading an institution checkpoint restores the previous turn's rate, so
+it must be set afterwards; a test covers it. With few turns the warm-up is a single turn.
+
+## [2026-11-13] Augmentation is seeded per institution and round
+**Decision:** `augment = true`: flips, 90° rotations and colour jitter 0.2 (`institution_data/augment.py`),
+with a generator seeded by `derive_seed(partition-seed, "augment", institution, round)`.
+**Why:** It keeps a turn a pure function of the round number, like the batch order.
+**Risks / edge cases found:** Moved from `experiments/pathmnist/augment.py`, which now wraps it for its
+[-1, 1] inputs; the system's inputs are [0, 1].
+
+## [2026-11-13] Demo noise 0.15 from the recalibrated curve
+**Decision:** `noise-std = 0.15`, the largest level costing at most 2 accuracy points in a 3-round sweep
+with the demo model and recipe (`experiments/results/noise_comparison_pathcnn_*`).
+**Why:** The rule in docs/integration_plan.md, step 4. With the new model 0.25 costs 3.5 points.
+**Risks / edge cases found:** One seed; run-to-run spread is about ±1 point.
+
+## [2026-11-13] The last round also reports test accuracy
+**Decision:** `final-evaluation-split = "test"`: after the last round every institution scores the
+official test split once. Per-round evaluation stays on validation.
+**Why:** Team decision (2026-11-13) so the demo can report the benchmark number.
+**Risks / edge cases found:** Test is never used to choose anything; it is scored once at the end.
+
+## [2026-11-13] TLS everywhere, with a private CA per deployment
+**Decision:** `make_certs.sh` creates a CA and the coordinator's certificate. The SuperLink and the relay
+serve TLS; SuperNodes, the `flwr` CLI and relay clients verify with the CA. `run_local.sh` and Docker
+never use `--insecure`. TLS file paths come from `MEDWEAVE_TLS_CERT`, `MEDWEAVE_TLS_KEY`, `MEDWEAVE_TLS_CA`.
+**Why:** SPEC §5.4 requires encrypted transport before the multi-laptop deployment.
+**Rejected alternatives:** mutual TLS (institution certificates); not needed to encrypt the traffic.
+**Risks / edge cases found:** Python 3.14 requires key-identifier extensions in the certificates. The
+certificate must name the address institutions use (LAN IP or hostname), passed to `make_certs.sh`.
+
+## [2026-11-13] Docker Compose deployment with one image
+**Decision:** One image for every process; Compose runs setup, the coordinator, 4 institutions with
+separate state volumes and the dashboard; `docker compose run --rm session` starts a run.
+**Why:** One build to maintain, and the same commands as a real deployment.
+**Risks / edge cases found:** The data volume is shared read-only in Compose. The dashboard's state
+volume must be writable because SQLite WAL readers need the `-shm` file.

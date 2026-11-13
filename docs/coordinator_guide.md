@@ -20,28 +20,45 @@ The coordinator runs a full Phase 1 session on one laptop:
 | Scheduler, checkpoints, relay, Flower orchestration | Member 1 | Done, tested end to end |
 | Dataset loading and activation noise | Member 3 | Done: PathMNIST shards per institution, Gaussian activation noise (`docs/features/data-and-privacy.md`) |
 | Dashboard and metadata database | Member 4 (built by Member 1, redesigned by Member 2) | Done: live dashboard, see [`dashboard/README.md`](../dashboard/README.md) |
-| Docker | Member 4 | **Not yet** |
+| Docker and TLS | Member 4 (built by Member 1) | Done: `docker compose`, see [`docs/docker.md`](docker.md); TLS in every run |
 
-Institutions train on their own PathMNIST shard (9 classes) with Adam
-(lr 0.001) and a small CNN with GroupNorm. Each turn is one pass over the
-owner's shard (351 batches of 64, about 12 s), and after every round each
-institution scores its own Head and Tail with the latest Backbone on the public
-validation split. The default 2 rounds take about 2 minutes and reach about
-0.76 mean validation accuracy (also with noise 0.25).
+The demo settings (all defaults in `pyproject.toml`):
+- **Model:** MedWeavePathCNN-v1 with GroupNorm (Member 2).
+- **Data:** each institution trains on its own PathMNIST shard (9 classes), with flips, rotations and
+  colour jitter.
+- **Training:** AdamW (weight decay 1e-4), with a cosine learning rate that the coordinator sets per turn.
+- **Privacy:** activation noise 0.15.
+- **Security:** everything over TLS.
+
+Each turn is one pass over the owner's shard (351 batches of 64, about 22 s). After every round each
+institution scores its own Head and Tail on the validation split, and after the last round on the test
+split.
+
+**Measured on 2026-11-13** (3 rounds, about 5.5 minutes):
+
+| Round | Mean validation accuracy |
+|---|---|
+| 1 | 0.704 |
+| 2 | 0.777 |
+| 3 | 0.798 |
+
+The final mean test accuracy was **0.831** (institutions 0.825–0.835).
 
 ## 2. Setup
 
-The code is on the `coordinator` branch, which already includes Member 2's
-`split_learning` code.
+Everything is merged on the `integration/demo` branch: the coordinator, Member 2's engine and model,
+Member 3's data and noise, and the dashboard.
 
 ```bash
 git fetch
-git checkout coordinator
+git checkout integration/demo
 
 python3 -m venv venv                  # must be called "venv", at the repo root
 source venv/bin/activate
-pip install torch numpy flwr pytest mlflow
+pip install -r requirements.txt pytest
 ```
+
+To use Docker instead of a virtual environment, see [`docs/docker.md`](docker.md).
 
 The first `run_local.sh` also downloads PathMNIST (205 MB, once per machine,
 into `~/.medweave/data` or `$MEDWEAVE_DATA_DIR`). To do that ahead of a demo:
@@ -55,8 +72,8 @@ the virtual environment at `venv/` in the repo root.
 From the repo root:
 
 ```bash
-coordinator/flower_app/run_local.sh                               # 1 round
-coordinator/flower_app/run_local.sh --run-config "num-rounds=2"   # 2 rounds
+coordinator/flower_app/run_local.sh                               # 3 rounds (the demo)
+coordinator/flower_app/run_local.sh --run-config "num-rounds=1"   # a quicker run
 ```
 
 To watch it live, run `dashboard/run_dashboard.sh` in a second terminal and
@@ -67,13 +84,13 @@ Expected output (other log lines removed):
 ```
 [coordinator] registered institutions: inst-1, inst-2, inst-3, inst-4
 [coordinator] initialised Backbone v0
-[coordinator] round 1: inst-1 trains, inst-2 computes, Backbone v0
-[coordinator]   done in 9.2s: 351 batches, loss 1.603, accuracy 0.42, noise std 0 (activations changed 0.0%) -> Backbone v1
-[coordinator] round 1: inst-2 trains, inst-3 computes, Backbone v1
+[coordinator] round 1: inst-1 trains, inst-2 computes, Backbone v0, learning rate 1.00e-03
+[coordinator]   done in 21.2s: 351 batches, loss 1.435, accuracy 0.46, noise std 0.15 (activations changed 17.6%) -> Backbone v1
 ...
-[coordinator] round 1 val accuracy with Backbone v4 (10004 samples): inst-1 0.372, inst-2 0.528, inst-3 0.552, inst-4 0.572; mean 0.506
-[coordinator] session complete: coordinator holds Backbone v4
-run 2869353954842831473: finished:completed
+[coordinator] round 3 val accuracy with Backbone v12 (10004 samples): inst-1 0.776, inst-2 0.792, inst-3 0.809, inst-4 0.813; mean 0.798
+[coordinator] session complete: coordinator holds Backbone v12
+[coordinator] round 3 test accuracy with Backbone v12 (7180 samples): inst-1 0.825, inst-2 0.828, inst-3 0.835, inst-4 0.834; mean 0.831
+run 7055488590190374045: finished:completed
 ```
 
 The script's exit code follows the last line: 0 only for `finished:completed`.
@@ -91,6 +108,7 @@ Good to know:
   | `coordinator/checkpoints/` | `backbone_v0.pt`, `backbone_v1.pt`, ... |
   | `institutions/` | `inst-1.pt` ... each institution's own Head and Tail |
   | `logs/` | `superlink.log`, `inst-1.log` ... |
+  | `certs/` | the deployment's CA and the coordinator's TLS certificate |
 
 - **A new run continues from the latest saved Backbone.** To start over from
   v0, run `rm -rf .medweave_local`.
@@ -112,7 +130,7 @@ for each turn (e.g. inst-1 trains, inst-2 computes):
   Backbone vN ─────── "train.peer" ────────────────>  inst-2 loads Backbone vN
   start ───────────── "train.owner" ───────────────>  inst-1 starts its batches
 
-  per batch, through the relay (HTTP):
+  per batch, through the relay (HTTPS):
     inst-1 ── activations ──────> inst-2   (Backbone forward)
     inst-1 <── backbone output ── inst-2
     inst-1 ── gradient ─────────> inst-2   (Backbone backward + update)
@@ -144,13 +162,16 @@ What stays where:
 Both connection points are in `coordinator/flower_app/client_app.py`, in
 `train_own_data()`.
 
-Done. In `train_own_data()` the data owner opens only its own shard
+Done. With `augment = true` the batches also get flips, rotations and colour
+jitter (`institution_data/augment.py`), seeded per institution and round. In
+`train_own_data()` the data owner opens only its own shard
 (`institution_data.open_institution_training`) and builds the turn's batches
 from `TurnInfo.round_number` (`training_loader`): float `(B, 3, 28, 28)` in
 [0, 1] and `torch.long` `(B,)` labels in 0..8. It perturbs the activations with
 `privacy.GaussianActivationNoise` before sending them and reports `noise_std`
 and `activation_change_pct` with its metrics. `MODEL_CONFIG` is PathMNIST:
-3×28×28, 9 classes. Details: `docs/features/data-and-privacy.md`.
+3×28×28, 9 classes. Details: `docs/features/data-and-privacy.md`. The noise
+levels were re-measured for the new model (section 1 of that document).
 
 ### Member 2: split-learning engine
 
@@ -191,37 +212,45 @@ gives exactly the same loss and weights as your in-process
   with each institution's held-out `accuracy` and `loss`.
 - Every session is also recorded in MLflow (`docs/features/experiment-tracking.md`).
 
-**Docker, and later multiple laptops.**
+**Docker** is done: see [`docs/docker.md`](docker.md).
 
-Processes to run:
+**Multiple laptops.** One laptop is the coordinator; each other laptop is one institution.
 
-| Process | Command | Port |
-|---|---|---|
-| Coordinator | `flower-superlink --insecure` | 8000 |
-| Relay | started by the coordinator automatically | 8765 |
-| Each institution | `flower-supernode --insecure --superlink <coordinator>:8000 --port 9094 --node-config 'institution-id="inst-N"'` | 9094 |
+1. On the coordinator laptop, create the TLS files. Name the laptop's LAN address so institutions can
+   verify it:
 
-Each institution only needs a distinct port when several run on the same
-machine.
+   ```bash
+   coordinator/flower_app/make_certs.sh certs 192.168.1.10
+   ```
 
-Environment for every process:
+   Copy `certs/ca.crt`, and only that file, to every institution laptop.
+2. Start the processes:
 
-| Variable | Purpose |
-|---|---|
-| `PYTHONPATH` | the repo root |
-| `PATH` | must include the venv's `bin` |
-| `MEDWEAVE_STATE_DIR` | where that machine's checkpoints go |
-| `FLWR_HOME` | where Flower keeps its config |
+   | Laptop | Command |
+   |---|---|
+   | Coordinator | `flower-superlink --host 0.0.0.0 --ssl-ca-certfile certs/ca.crt --ssl-certfile certs/server.crt --ssl-keyfile certs/server.key` |
+   | Each institution | `flower-supernode --root-certificates ca.crt --superlink 192.168.1.10:8000 --node-config 'institution-id="inst-N"'` |
 
-Settings to change in `pyproject.toml` for multi-laptop runs:
-- `relay-host`: the address the relay listens on, e.g. `0.0.0.0` to accept
-  connections from other machines.
-- `relay-url`: the address the institutions use to reach the relay. It must
-  be the coordinator laptop's LAN address, e.g. `http://192.168.1.10:8765`,
-  not `127.0.0.1`.
+3. Set the environment variables:
 
-**TLS.** Everything currently runs with `--insecure` over plain HTTP. TLS
-must be added before the multi-laptop demo (SPEC §5.4).
+   | Variable | On | Purpose |
+   |---|---|---|
+   | `PYTHONPATH` | every laptop | the repo root |
+   | `PATH` | every laptop | must include the venv's `bin` |
+   | `MEDWEAVE_STATE_DIR` | every laptop | where that machine's checkpoints go |
+   | `MEDWEAVE_DATA_DIR` | institutions | where that machine's shard is (`python -m institution_data prepare`) |
+   | `MEDWEAVE_TLS_CERT`, `MEDWEAVE_TLS_KEY` | coordinator | `certs/server.crt` and `certs/server.key`, for the relay |
+   | `MEDWEAVE_TLS_CA` | institutions | `ca.crt`, to verify the relay |
+   | `FLWR_HOME` | where you run `flwr run` | its `config.toml` needs `root-certificates` pointing at `ca.crt` |
+
+4. Start the session with these settings:
+
+   ```bash
+   --run-config 'relay-host="0.0.0.0" relay-url="https://192.168.1.10:8765"'
+   ```
+
+   - `relay-host="0.0.0.0"` lets the relay accept other machines.
+   - `relay-url` must use the coordinator's LAN address, the same one named in the certificate.
 
 ## 6. Settings
 
@@ -232,27 +261,33 @@ Settings are in `[tool.flwr.app.config]` in
 | Setting | Default | Meaning |
 |---|---|---|
 | `num-institutions` | 4 | How many institutions the coordinator waits for |
-| `num-rounds` | 2 | Each round gives every institution one turn |
+| `num-rounds` | 3 | Each round gives every institution one turn |
 | `batches-per-turn` | 351 | Batches each data owner trains per turn (351 × 64 = one pass over a 22,499-sample shard) |
 | `turn-timeout` | 300.0 | Seconds before a turn is treated as failed |
 | `registration-timeout` | 120.0 | Seconds to wait for all institutions to connect |
 | `relay-host` | `127.0.0.1` | Address the relay listens on |
 | `relay-port` | 8765 | Relay port |
-| `relay-url` | `http://127.0.0.1:8765` | Address the institutions use to reach the relay |
+| `relay-url` | `https://127.0.0.1:8765` | Address the institutions use to reach the relay; `https://` needs `MEDWEAVE_TLS_CERT`/`MEDWEAVE_TLS_KEY` on the coordinator |
 | `partition-seed` | 0 | Which provisioned PathMNIST partition and batch order |
 | `batch-size` | 64 | Training batch size |
-| `noise-std` | 0.0 | Gaussian noise std on Head activations (0 = no noise) |
+| `augment` | `true` | Flips, 90° rotations and colour jitter on training batches |
+| `augment-jitter` | 0.2 | Colour jitter strength (0 = orientation only) |
+| `noise-std` | 0.15 | Gaussian noise std on Head activations (0 = no noise); chosen from the noise sweep |
 | `noise-seed` | 0 | Base seed for the noise |
-| `optimizer` | `adam` | Optimizer for Head, Tail and Backbone (`adam` or `sgd`) |
-| `learning-rate` | 0.001 | Learning rate for that optimizer |
+| `optimizer` | `adamw` | Optimizer for Head, Tail and Backbone (`adamw`, `adam` or `sgd`) |
+| `learning-rate` | 0.001 | Base learning rate |
+| `weight-decay` | 0.0001 | Weight decay for that optimizer |
+| `lr-schedule` | `cosine` | `cosine` (warm-up, then decay to 0 over the session's turns) or `constant`; one rate per turn, sent in `TurnInfo` |
+| `lr-warmup` | 0.05 | Fraction of the turns used for linear warm-up |
 | `evaluation-split` | `val` | Held-out split each institution scores after every round (`val`, `test`, or `none` to skip) |
 | `evaluation-batch-size` | 512 | Batch size for that evaluation |
+| `final-evaluation-split` | `test` | Split every institution scores once after the last round (`none` to skip) |
 | `tracking` | `mlflow` | Record the session in MLflow (`python -m tracking ui` to view), or `none` |
 
 ## 7. Tests
 
 ```bash
-python -m pytest tests -v                    # everything (218 tests)
+python -m pytest tests -v                    # everything (306 tests)
 python -m pytest tests/unit/coordinator -v   # coordinator only
 ```
 
@@ -262,12 +297,12 @@ institution code and a real HTTP relay, without starting Flower processes.
 
 ## 8. Known limitations
 
-- **No TLS.**
 - **No disconnect handling.** If a turn fails, the session stops and the
   Backbone is left unchanged. Skipping or retrying an offline institution is
   not built yet.
-- **Test-set ownership is undecided**, so evaluation uses the validation split
-  by default; `evaluation-split=test` works but is not the agreed protocol.
+- **Gradients can reveal labels.** Activation noise does not protect the
+  gradient sent back to the compute peer (`docs/features/data-and-privacy.md`).
+- **Not differential privacy.** `noise-std` is not an epsilon.
 - A restarted session continues from the latest Backbone but starts the turn
   order from the first turn again.
 
@@ -286,3 +321,5 @@ institution code and a real HTTP relay, without starting Flower processes.
 | `Backbone checkpoint does not match the configured architecture` | The model changed (e.g. GroupNorm was added) since the stored checkpoints were made. Run `rm -rf .medweave_local`. |
 | Want a clean start from v0 | `rm -rf .medweave_local` |
 | Run is slow the first time | Normal. Flower builds its environment once (about 40 seconds). |
+| `CERTIFICATE_VERIFY_FAILED` or `cannot reach relay` | The certificate does not name the address in use, or the institution has the wrong `ca.crt`. Re-create with `make_certs.sh <dir> <LAN IP>` and copy the new `ca.crt`. |
+| `relay-url ... does not match the relay's TLS setting` | Use `https://` with `MEDWEAVE_TLS_CERT`/`MEDWEAVE_TLS_KEY` set (as `run_local.sh` does), or `http://` without them. |

@@ -88,8 +88,7 @@ The prototype will initially run on a single machine using Docker Compose, with 
 
 ### Prerequisites
 
-- Python 3.11+
-- Docker and Docker Compose
+- Docker and Docker Compose, **or** Python 3.14 and Node.js (for the dashboard)
 - Git
 
 ### Clone the Repository
@@ -101,7 +100,30 @@ cd MedWeave
 
 ### Run the Project
 
-Setup and execution instructions will be added as the initial implementation is integrated.
+Two ways to run a full session (4 institutions, PathMNIST, activation noise, TLS) on one machine.
+Both download PathMNIST (205 MB) on first use.
+
+**With Docker** (see [`docs/docker.md`](docs/docker.md)):
+
+```bash
+docker compose up -d --build        # coordinator, 4 institutions, dashboard
+docker compose run --rm session     # one training session (3 rounds by default)
+open http://127.0.0.1:8080          # live dashboard
+```
+
+**With a Python virtual environment** (macOS or Linux):
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+coordinator/flower_app/run_local.sh           # terminal 1: a training session
+dashboard/run_dashboard.sh                    # terminal 2: dashboard on http://127.0.0.1:8080 (needs Node.js)
+python -m tracking ui                         # optional: MLflow run history
+```
+
+Settings (rounds, noise, learning rate, ...) are in `coordinator/flower_app/pyproject.toml`; override one
+for a run with `--run-config "noise-std=0.25"`. The teammate guide,
+[`docs/coordinator_guide.md`](docs/coordinator_guide.md), covers the details and the multi-laptop setup.
 
 ## Team
 

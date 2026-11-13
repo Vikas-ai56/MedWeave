@@ -76,13 +76,48 @@ much the representation changed, not whether privacy is achieved.
 |---|---|---|
 | `partition-seed` | 0 | Which provisioned partition and batch order. `run_local.sh` prepares seed 0; for another seed run `python -m institution_data prepare --seed N` first |
 | `batch-size` | 64 | Training batch size per institution |
-| `noise-std` | 0.0 | Gaussian noise std on Head activations (0 = baseline) |
+| `noise-std` | 0.15 | Gaussian noise std on Head activations (0 = baseline); chosen from the 2026-11-13 sweep below |
 | `noise-seed` | 0 | Base seed for the noise streams |
 
 Each owner turn reports `noise_std` and `activation_change_pct` in its MetricRecord. The coordinator
 logs them and keeps them in `TurnResult`.
 
-## Experiment result (2026-11-12, GroupNorm model)
+## Experiment result (2026-11-13, MedWeavePathCNN-v1 with GroupNorm)
+
+The system model changed to Member 2's MedWeavePathCNN-v1 with GroupNorm and the full recipe (AdamW with
+weight decay 1e-4, per-turn cosine learning rate, augmentation), so the levels were measured again.
+`experiments.noise_comparison` now trains with that recipe by default.
+
+```bash
+python -m experiments.noise_comparison --inspect      # untrained Head activation std 0.647 (45% zeros)
+python -m experiments.noise_comparison --noise-std 0 0.25 0.5 0.75 1.0 1.25 --rounds 3 \
+    --output experiments/results/noise_comparison_pathcnn_clean_eval.csv
+python -m experiments.noise_comparison --noise-std 0.05 0.1 0.15 --rounds 3 \
+    --output experiments/results/noise_comparison_pathcnn_low_clean_eval.csv
+```
+
+3 rounds, 351 batches per turn, partition and noise seed 0, clean evaluation on the validation split:
+
+| noise_std | Final-round mean validation accuracy | Cost (points) | Mean activation change |
+|---|---|---|---|
+| 0 | 0.817 | – | 0% |
+| 0.05 | 0.813 | 0.4 | 6% |
+| 0.10 | 0.797 | 2.0 | 12% |
+| **0.15** | **0.802** | **1.5** | **17%** |
+| 0.25 | 0.782 | 3.5 | 27% |
+| 0.5 | 0.760 | 5.7 | 52% |
+| 0.75 | 0.670 | 14.7 | 76% |
+| 1.0 | 0.559 | 25.8 | 100% |
+| 1.25 | 0.443 | 37.4 | 122% |
+
+- **Noise now costs accuracy sooner.** With the earlier placeholder CNN, 0.25 was free; with this
+  model it costs 3.5 points.
+- **The demo uses 0.15:** the largest level costing at most 2 points, as docs/integration_plan.md asks.
+- **Spread:** only one seed was run. 0.10 scoring below 0.15 shows run-to-run variation of about ±1 point.
+- **Real Flower session** (3 rounds, noise 0.15, TLS): validation 0.704, 0.777, 0.798 per round, which
+  matches the in-process 0.802. Final test accuracy was 0.831 (institutions 0.825–0.835).
+
+## Experiment result (2026-11-12, placeholder GroupNorm model)
 
 ```bash
 python -m experiments.noise_comparison --inspect
@@ -125,6 +160,6 @@ MLflow, experiment `medweave-noise-comparison` (`docs/features/experiment-tracki
 
 | Question | Current state |
 |---|---|
-| Who owns the test set | Undecided. Built meanwhile: after every round each institution scores its own Head and Tail with the latest Backbone on a public split, locally (`evaluation-split`, default `val`). `test` works but is not the agreed protocol. |
+| Who owns the test set | Decided 2026-11-13: every round is scored on `val`; after the last round each institution also scores `test` once (`final-evaluation-split = "test"`). |
 | Noise during evaluation | Clean by default; noisy evaluation is available in the engine and the experiment, and both results are below. |
 | Visualisation sharing | Only derived statistics and single-channel heatmaps are produced; nothing is sent to the dashboard yet. |
