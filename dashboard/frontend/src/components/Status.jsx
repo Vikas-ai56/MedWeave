@@ -17,6 +17,8 @@ const ICONS = {
       <circle cx="7" cy="10.2" r="1" fill="currentColor" />
     </>
   ),
+  diamond: <path d="M7 2.8 11.2 7 7 11.2 2.8 7Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />,
+  dash: <path d="M4 7h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
 };
 
 // What each backend status looks like.
@@ -31,11 +33,14 @@ const STATUS = {
   active: { tone: "active", icon: "pulse", label: "In progress" },
   unreachable: { tone: "critical", icon: "alert", label: "Backend unreachable" },
   live: { tone: "good", icon: "dot", label: "Live" },
+  simulated: { tone: "sim", icon: "diamond", label: "Simulated" },
+  skipped: { tone: "neutral", icon: "dash", label: "Skipped" },
+  connecting: { tone: "neutral", icon: "ring", label: "Connecting" },
 };
 
 export function Icon({ name, size = 14 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 14 14" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 14 14" aria-hidden="true" className="icon">
       {ICONS[name]}
     </svg>
   );

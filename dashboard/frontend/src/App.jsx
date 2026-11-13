@@ -1,169 +1,120 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { LineChart } from "./components/LineChart.jsx";
-import {
-  EventLog,
-  InstitutionCard,
-  ModelStatus,
-  Overview,
-  PrivacyPanel,
-  TurnTable,
-  TurnTimeline,
-} from "./components/Panels.jsx";
-import { Status } from "./components/Status.jsx";
-import { decimal, percent } from "./format.js";
+import { CommandBar, Sidebar, StaleAlert } from "./components/Shell.jsx";
+import { EmptyState, LoadingState, UnreachableState } from "./components/States.jsx";
+import { useNow, usePrefersReducedMotion, useUpdatedAt } from "./lib/hooks.js";
+import { VIEWS, routeHref, useHashRoute } from "./lib/route.js";
+import { SIMULATION_TICK_MS, simulateSnapshot } from "./lib/simulate.js";
 import { usePolling } from "./usePolling.js";
+import { EvidenceView } from "./views/EvidenceView.jsx";
+import { ExperimentsView } from "./views/ExperimentsView.jsx";
+import { InstitutionsView } from "./views/InstitutionsView.jsx";
+import { ProtectionView } from "./views/ProtectionView.jsx";
+import { WeaveView } from "./views/WeaveView.jsx";
 
 const POLL_MS = 1500;
-const loss = (turn) => turn.loss;
-const accuracy = (turn) => turn.accuracy;
+const SESSIONS_POLL_MS = 10000;
+const SESSION_VIEWS = { weave: WeaveView, institutions: InstitutionsView, evidence: EvidenceView };
+const STATIC_VIEWS = { experiments: ExperimentsView, protection: ProtectionView };
+
+/** A new `refresh` value changes the URL, which restarts usePolling's cycle immediately. */
+function dashboardUrl(sessionId, refresh) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set("session_id", sessionId);
+  if (refresh) params.set("_refresh", String(refresh));
+  const query = params.toString();
+  return `/api/dashboard${query ? `?${query}` : ""}`;
+}
+
+function useSimulation(enabled) {
+  const origin = useRef(Date.now());
+  const [snapshot, setSnapshot] = useState(null);
+  useEffect(() => {
+    if (!enabled) {
+      setSnapshot(null);
+      return undefined;
+    }
+    origin.current = Date.now();
+    const tick = () => setSnapshot(simulateSnapshot(Date.now(), origin.current));
+    tick();
+    const timer = setInterval(tick, SIMULATION_TICK_MS);
+    return () => clearInterval(timer);
+  }, [enabled]);
+  return snapshot;
+}
 
 export default function App() {
-  const { data, error } = usePolling("/api/dashboard", POLL_MS);
-  const now = useNow(5000);
+  const { view, params } = useHashRoute();
+  const simulated = params.get("sim") === "1";
+  const [sessionId, setSessionId] = useState(null);
+  const [refresh, setRefresh] = useState(0);
 
-  return (
-    <div className="app">
-      <Header data={data} error={error} />
-      {error && (
-        <div className="banner" role="alert">
-          <Status status="unreachable" /> {data ? "Showing the last data received." : ""} ({error})
-        </div>
-      )}
-      {!data ? (
-        !error && <div className="empty">Loading…</div>
-      ) : !data.session ? (
-        <EmptyState databaseExists={data.database_exists} />
-      ) : (
-        <Dashboard data={data} now={now} />
-      )}
-    </div>
-  );
-}
+  const live = usePolling(dashboardUrl(sessionId, refresh), POLL_MS);
+  const sessions = usePolling("/api/sessions", SESSIONS_POLL_MS);
+  const simulation = useSimulation(simulated);
 
-function Header({ data, error }) {
-  const session = data?.session;
-  return (
-    <header className="header">
-      <div className="brand">
-        <svg className="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
-          <rect width="28" height="28" rx="7" fill="#22304a" />
-          <path d="M6 9c4 0 4 10 8 10s4-10 8-10" fill="none" stroke="#22a898" strokeWidth="2.2" strokeLinecap="round" />
-          <path d="M6 19c4 0 4-10 8-10s4 10 8 10" fill="none" stroke="#b4bfcf" strokeWidth="1.6" strokeLinecap="round" opacity="0.7" />
-        </svg>
-        <div>
-          <h1>MedWeave</h1>
-          <p>Collaborative split-learning training</p>
-        </div>
-      </div>
-      <div className="session-meta">
-        {session && (
-          <>
-            <span className="chip">
-              Session <code>{session.id}</code>
-            </span>
-            <span className="chip">
-              <Status status={session.status} />
-            </span>
-          </>
-        )}
-        <span className="chip">{error ? <Status status="unreachable" label="Offline" /> : <Status status="live" />}</span>
-      </div>
-    </header>
-  );
-}
+  const data = simulated ? simulation : live.data;
+  const error = simulated ? null : live.error;
+  const updatedAt = useUpdatedAt(data);
+  const now = useNow(simulated ? 1000 : 5000);
+  const reducedMotion = usePrefersReducedMotion();
+  const connection = simulated ? "simulated" : error ? "unreachable" : live.data ? "live" : "connecting";
 
-function Dashboard({ data, now }) {
-  const { session, institutions, current_turn, turns, model, noise, events } = data;
-  // Charts plot finished turns only; a turn still in progress has no value yet.
-  const finishedTurns = useMemo(() => turns.filter((t) => t.status === "completed" || t.status === "failed"), [turns]);
-  return (
-    <main>
-      <Overview session={session} institutions={institutions} model={model} />
-
-      <section className="section">
-        <h2 className="section-title">Institution network</h2>
-        <div className="grid grid-institutions">
-          {institutions.map((institution) => (
-            <InstitutionCard key={institution.id} institution={institution} now={now} />
-          ))}
-        </div>
-      </section>
-
-      <section className="section">
-        <h2 className="section-title">Training activity</h2>
-        <div className="grid grid-turn">
-          <TurnTimeline turn={current_turn} sessionStatus={session.status} />
-          <ModelStatus model={model} session={session} />
-        </div>
-      </section>
-
-      <section className="section">
-        <h2 className="section-title">Training metrics per turn</h2>
-        <div className="grid grid-2">
-          <div className="card">
-            <h3>
-              Training loss<span className="card-sub">data owner's batches, lower is better</span>
-            </h3>
-            <LineChart turns={finishedTurns} value={loss} format={(v) => decimal(v, 2)} ariaLabel="Training loss per turn" />
-          </div>
-          <div className="card">
-            <h3>
-              Training accuracy<span className="card-sub">data owner's batches</span>
-            </h3>
-            <LineChart
-              turns={finishedTurns}
-              value={accuracy}
-              format={percent}
-              domain={[0, 1]}
-              ariaLabel="Training accuracy per turn"
-            />
-          </div>
-        </div>
-        <div className="card section">
-          <h3>Turn history</h3>
-          <TurnTable turns={turns} />
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="grid grid-2">
-          <div>
-            <h2 className="section-title">Privacy</h2>
-            <PrivacyPanel noise={noise} />
-          </div>
-          <div>
-            <h2 className="section-title">Activity log</h2>
-            <div className="card">
-              <EventLog events={events} />
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function EmptyState({ databaseExists }) {
-  return (
-    <div className="card empty-state">
-      <h2>No training session yet</h2>
-      <p>Start one from the repository root:</p>
-      <p>
-        <code>coordinator/flower_app/run_local.sh</code>
-      </p>
-      <p className="muted">
-        {databaseExists ? "The dashboard will update as soon as the session starts." : "Waiting for the coordinator's database."}
-      </p>
-    </div>
-  );
-}
-
-function useNow(intervalMs) {
-  const [now, setNow] = useState(Date.now());
+  const first = useRef(true);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-  return now;
+    document.title = `${VIEWS.find((v) => v.id === view).label} · MedWeave`;
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    window.scrollTo(0, 0);
+    document.getElementById("view-title")?.focus({ preventScroll: true });
+  }, [view]);
+
+  const setSimulated = (on) => {
+    window.location.hash = routeHref(view, { simulated: on });
+  };
+  const simulate = () => setSimulated(true);
+
+  return (
+    <div className={`app view-${view}${simulated ? " is-simulated" : ""}`}>
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById("main")?.focus();
+        }}
+      >
+        Skip to content
+      </a>
+      <Sidebar view={view} simulated={simulated} connection={connection} updatedAt={updatedAt} />
+      <div className="workspace">
+        <CommandBar
+          session={data?.session}
+          sessions={sessions.data ?? []}
+          sessionId={sessionId}
+          onSessionChange={setSessionId}
+          onRefresh={() => setRefresh((n) => n + 1)}
+          simulated={simulated}
+          onSimulatedChange={setSimulated}
+          connection={connection}
+          updatedAt={updatedAt}
+        />
+        {error && data && <StaleAlert error={error} updatedAt={updatedAt} />}
+        <main id="main" tabIndex={-1}>
+          <Content view={view} data={data} error={error} now={now} reducedMotion={reducedMotion} onSimulate={simulate} />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Content({ view, data, error, now, reducedMotion, onSimulate }) {
+  const Static = STATIC_VIEWS[view];
+  if (Static) return <Static snapshot={data} />;
+  if (!data) return error ? <UnreachableState error={error} onSimulate={onSimulate} /> : <LoadingState />;
+  if (!data.session) return <EmptyState databaseExists={data.database_exists} onSimulate={onSimulate} />;
+  const View = SESSION_VIEWS[view];
+  return <View snapshot={data} now={now} reducedMotion={reducedMotion} />;
 }

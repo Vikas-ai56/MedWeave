@@ -3,14 +3,40 @@
 A live view of a MedWeave training session (SPEC §4). The page is read-only
 and refreshes every 1.5 seconds.
 
-| Panel | Shows |
+The interface is "The Living Weave": a dark observatory where institutions sit
+inside their own data boundaries around a turning, geodesic Shared Backbone.
+Five views, all hash routes (`#/weave`, `#/experiments`, ...), so the backend
+needs no new routes:
+
+| View | Shows |
 |---|---|
-| **Overview** | Round, completed turns, connected institutions, current data owner and compute peer, Backbone version |
-| **Institution network** | One card per institution: online/offline/busy, role (data owner / compute peer / idle), live batch progress, latest contribution |
-| **Training activity** | The 7 steps of the current turn (SPEC §4.3 C), plus the shared Backbone's version and latest checkpoint |
-| **Training metrics** | Loss and accuracy for each finished turn, and a turn history table with the same data |
-| **Privacy** | Noise configuration. The before/after activation view arrives with the privacy layer (later phase) |
-| **Activity log** | The latest 40 events |
+| **The Weave** | Institutions around the Shared Backbone. Noised activations pulse from the data owner to the core and gradients return; the compute peer's thread shows it hosting the Backbone. The 7 turn steps sit in an execution rail. The readout gives round, turns, connected institutions, data owner, compute peer, Backbone version, latest training accuracy, noise and "raw data moved: none". Hover an institution to focus it; click it or the core to open a floating detail layer with a progressive "View evidence" section. A completed turn plays a short (<1 s) reweave transition. |
+| **Experiments** | The research record: validation accuracy by round for the centralized reference and the three split-learning steps (from the curated MLflow runs), test metrics, the noise sweep (privacy cost) and bytes per round computed from the model's tensor shapes. Below: this session's training loss and accuracy per finished turn, and the full turn history (status filter, CSV export of the view). |
+| **Institutions** | The same institutions as a constellation, in contribution, performance or protection mode, and a ledger with one card per institution: status, role, batch progress, latest contribution, counts, last seen. Filters (All / Active / Owner / Peer / Idle) change the view only. |
+| **Protection** | Local data → protected update → shared model, step by step; what the coordinator can and cannot see; the three privacy placeholders with the noise configuration; and the limits, stated plainly. |
+| **Evidence** | Proof rail (the current turn's steps), the Backbone as a model artifact, the activity log (latest 40 events, type filter, jump to newest), participation per institution, the measured centralized-vs-split comparison, attack tests, and SDG 9 indicators. |
+
+Every status is an icon plus a label, never colour alone. Motion respects
+`prefers-reduced-motion`: pulses become static direction arrows and the core stops turning.
+
+### Simulated session
+
+With no coordinator running, **Simulated** in the command bar (or "Preview a simulated
+session" on the empty and offline screens) plays a generated session in the browser:
+four institutions, 10 rounds, one failed turn. `src/lib/simulate.js` is a pure function of
+time that returns the exact `/api/dashboard` shape and mirrors `snapshot.py`'s turn steps
+and roles, so every view renders it through the same code path as live data. It is
+labelled "Simulated" in amber wherever the connection status appears and is never mixed
+with live data.
+
+### What the interface deliberately does not claim
+
+The design brief asked for an ε privacy budget, clipping, secure aggregation, on-chain
+audit records and a FedAvg comparison. MedWeave has none of these (SPEC §1.7,
+`privacy/noise.py`), so the interface shows what exists instead: the noise σ, the
+coordinator's own event log, a "coordinator-visible / stays at the institution" boundary,
+and FedAvg marked "not measured". Its communication cost is shown only as an analytical
+estimate.
 
 ## How it gets its data
 
@@ -67,10 +93,17 @@ cd dashboard/frontend && npm run dev            # terminal 2: hot reload on :517
 |---|---|
 | `backend/app.py` | FastAPI app. Serves the API and the built frontend |
 | `backend/snapshot.py` | Turns database rows into the dashboard's view (roles, turn steps, history) |
-| `frontend/src/App.jsx` | Page layout and polling |
-| `frontend/src/components/Panels.jsx` | Overview, institution cards, turn steps, model status, table, privacy, log |
-| `frontend/src/components/LineChart.jsx` | Loss and accuracy charts (SVG, hover crosshair) |
+| `frontend/src/App.jsx` | Shell, hash routing, polling, live/simulated source, session selector, refresh |
+| `frontend/src/usePolling.js` | Polls a URL, keeping the last good response when a request fails |
+| `frontend/src/views/` | One file per view: Weave, Experiments, Institutions, Protection, Evidence |
+| `frontend/src/components/weave/` | The canvas (`WeaveCanvas.jsx`) and the geodesic Backbone (`Core.jsx`, rotated in an animation frame outside React) |
+| `frontend/src/components/Panels.jsx` | Overview readout, institution cards, execution rail, model artifact, turn table, privacy tiles, event stream |
+| `frontend/src/components/DetailLayer.jsx` | The floating institution / global model layer |
+| `frontend/src/components/LineChart.jsx` | Per-turn loss and accuracy (SVG, hover and arrow-key crosshair, failed turns as hollow markers) |
+| `frontend/src/components/SeriesChart.jsx` | Multi-series research chart with direct labels and marker shapes |
 | `frontend/src/components/Status.jsx` | Status indicators: always an icon plus a label |
+| `frontend/src/lib/` | Pure logic: derived values, simulator, research record, geometry, CSV export, hooks |
+| `frontend/src/styles/` | Design tokens and styles, one file per layer (imported by `styles.css`) |
 | `../database/schema.sql`, `../database/store.py` | The SQLite tables and the coordinator's writer |
 
 ## Tests
@@ -82,7 +115,12 @@ python -m pytest tests/unit/dashboard tests/unit/database tests/unit/coordinator
 ## Dependencies
 
 - **Backend:** FastAPI and uvicorn, which are already installed with Flower.
-- **Frontend:** React 19 and Vite 6, pinned in `frontend/package.json`.
+- **Frontend:** React 19 and Vite 6, pinned in `frontend/package.json`. Fonts
+  (Newsreader, Geist, Geist Mono) are bundled through `@fontsource-variable`, so the
+  dashboard renders correctly with no internet connection. No chart or animation
+  libraries: charts are hand-written SVG, and motion is CSS and SVG `animateMotion`.
+- **Research record:** `frontend/src/lib/research.js` holds numbers copied from the
+  curated MLflow runs and the noise sweep, with their sources. Update it when those runs change.
 
 ## Known limitations
 
