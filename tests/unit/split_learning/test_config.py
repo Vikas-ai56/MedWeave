@@ -45,6 +45,11 @@ def test_moving_a_block_moves_the_split_point() -> None:
         ({"backbone_channels": (32, 0)}, "positive"),
         ({"tail_hidden": (-1,)}, "positive"),
         ({"image_size": (4, 4), "backbone_channels": (8, 8, 8)}, "too small"),
+        ({"convs_per_block": 0}, "convs_per_block"),
+        ({"batch_norm": True, "group_norm": True}, "at most one"),
+        ({"group_norm": True, "head_channels": (12,)}, "divisible"),
+        ({"tail_dropout": 1.0}, "tail_dropout"),
+        ({"tail_dropout": -0.1}, "tail_dropout"),
     ],
 )
 def test_invalid_config_is_rejected(kwargs: dict, message: str) -> None:

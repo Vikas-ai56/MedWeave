@@ -1,0 +1,18 @@
+{"time":"2026-11-12T19:17:01.7715427+05:30","level":"INFO","msg":"wandb-core"}
+{"time":"2026-11-12T19:17:01.7720595+05:30","level":"INFO","msg":"stream: starting","core version":"0.31.0"}
+{"time":"2026-11-12T19:17:01.7774179+05:30","level":"INFO","msg":"stream: created new stream","id":"t91qxxcl"}
+{"time":"2026-11-12T19:17:01.7774179+05:30","level":"INFO","msg":"handler: started"}
+{"time":"2026-11-12T19:17:01.7796246+05:30","level":"INFO","msg":"stream: started"}
+{"time":"2026-11-12T19:17:01.7796246+05:30","level":"INFO","msg":"writer: started","stream_id":"t91qxxcl"}
+{"time":"2026-11-12T19:17:01.7796246+05:30","level":"INFO","msg":"sender: started"}
+{"time":"2026-11-12T19:17:04.2893781+05:30","level":"INFO","msg":"filestream: sending request","total_files":1}
+{"time":"2026-11-12T19:17:05.250706+05:30","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-11-12T19:17:06.7865481+05:30","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-11-12T19:17:06.7870982+05:30","level":"INFO","msg":"filestream: sending request","total_files":2,"history_offset":0,"history_lines":5,"uploaded_len":4,"complete":true,"exit_code":0}
+{"time":"2026-11-12T19:17:07.1889165+05:30","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-11-12T19:17:07.1944901+05:30","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-11-12T19:17:07.2108309+05:30","level":"INFO","msg":"stream: finishing up"}
+{"time":"2026-11-12T19:17:07.211506+05:30","level":"INFO","msg":"handler: closed"}
+{"time":"2026-11-12T19:17:07.2143437+05:30","level":"INFO","msg":"sender: closed"}
+{"time":"2026-11-12T19:17:07.2143437+05:30","level":"INFO","msg":"stream: all finished"}
+{"time":"2026-11-12T19:17:09.2147599+05:30","level":"ERROR","msg":"stream: failed to shut down analytics","error":"shutdown errors: [failed to upload metrics: context deadline exceeded: retry-able request failure: Post \"https://api.forge.coreweave.com/sdk/otel/v1/metrics\": context deadline exceeded context deadline exceeded]"}

@@ -9,9 +9,25 @@ from split_learning.layers import conv_blocks
 class Backbone(nn.Module):
     """Shared middle of the U, executed by the assigned compute peer."""
 
-    def __init__(self, in_channels: int, channels: Sequence[int], group_norm: bool = False) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        channels: Sequence[int],
+        *,
+        batch_norm: bool = False,
+        final_pool: bool = True,
+        group_norm: bool = False,
+        convs_per_block: int = 1,
+    ) -> None:
         super().__init__()
-        self.layers = conv_blocks(in_channels, channels, group_norm)
+        self.layers = conv_blocks(
+            in_channels,
+            channels,
+            batch_norm=batch_norm,
+            pool_last=final_pool,
+            group_norm=group_norm,
+            convs_per_block=convs_per_block,
+        )
 
     def forward(self, activations: Tensor) -> Tensor:
         return self.layers(activations)
@@ -19,4 +35,11 @@ class Backbone(nn.Module):
 
 def build_backbone(config: SplitModelConfig) -> Backbone:
     with seeded(config.seed + 1):
-        return Backbone(config.head_channels[-1], config.backbone_channels, config.group_norm)
+        return Backbone(
+            config.head_channels[-1],
+            config.backbone_channels,
+            batch_norm=config.batch_norm,
+            final_pool=config.backbone_final_pool,
+            group_norm=config.group_norm,
+            convs_per_block=config.convs_per_block,
+        )

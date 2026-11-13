@@ -7,7 +7,7 @@ from torch import Tensor
 
 from split_learning.backward import head_backward, tail_backward
 from split_learning.config import OptimizerFactory, SplitModelConfig, default_optimizer
-from split_learning.forward import HeadPass, head_forward, tail_forward
+from split_learning.forward import HeadPass, LossFn, head_forward, tail_forward
 from split_learning.head import build_head
 from split_learning.tail import build_tail
 from split_learning.validation import PendingBatch, check_batch, check_exact, check_labels
@@ -38,6 +38,7 @@ class Institution:
         institution_id: str,
         config: SplitModelConfig,
         optimizer_factory: OptimizerFactory = default_optimizer,
+        loss_fn: LossFn = F.cross_entropy,
     ) -> None:
         self.institution_id = institution_id
         self.config = config
@@ -45,6 +46,7 @@ class Institution:
         self.tail = build_tail(config)
         self.head_optimizer = optimizer_factory(self.head.parameters())
         self.tail_optimizer = optimizer_factory(self.tail.parameters())
+        self.loss_fn = loss_fn
         self._pending: PendingBatch[HeadPass] = PendingBatch()
 
     def head_forward(self, batch_id: str, inputs: Tensor) -> Tensor:
@@ -61,7 +63,7 @@ class Institution:
         expected_output = torch.Size((batch_size, *self.config.backbone_output_shape))
         check_exact(backbone_output, expected_output, "backbone output")
         check_labels(labels, batch_size, self.config.num_classes)
-        tail_pass = tail_forward(self.tail, backbone_output, labels)
+        tail_pass = tail_forward(self.tail, backbone_output, labels, self.loss_fn)
         gradient = tail_backward(tail_pass, self.tail_optimizer)
         return TailResult(gradient, metrics(tail_pass.loss, tail_pass.logits, labels))
 
@@ -106,8 +108,9 @@ def create_institutions(
     institution_ids: Sequence[str],
     config: SplitModelConfig,
     optimizer_factory: OptimizerFactory = default_optimizer,
+    loss_fn: LossFn = F.cross_entropy,
 ) -> dict[str, Institution]:
     """Institutions with identical initial weights but fully independent parameters."""
     if len(set(institution_ids)) != len(institution_ids):
         raise ValueError(f"institution ids must be unique, got {list(institution_ids)}")
-    return {id_: Institution(id_, config, optimizer_factory) for id_ in institution_ids}
+    return {id_: Institution(id_, config, optimizer_factory, loss_fn) for id_ in institution_ids}

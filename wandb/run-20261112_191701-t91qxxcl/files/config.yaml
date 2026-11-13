@@ -1,0 +1,39 @@
+_wandb:
+    value:
+        cli_version: 0.31.0
+        e:
+            01a1d003-0707-78c8-8eb1-5bdcc3fdeb35:
+                codePath: ..\AppData\Local\Programs\Python\Python313\Lib\_pyrepl\__main__.py
+                codePathLocal: ..\AppData\Local\Programs\Python\Python313\Lib\_pyrepl\__main__.py
+                executable: C:\Users\kartik\MedWeave\venv\Scripts\python.exe
+                git:
+                    commit: 90dacc494ed43a301ac2e6b9d4ceb38b17205491
+                    remote: https://github.com/Vikas-ai56/MedWeave
+                host: LAPTOP-E4M3T2SD
+                os: Windows-11-10.0.26300-SP0
+                program: C:\Users\kartik\AppData\Local\Programs\Python\Python313\Lib\_pyrepl\__main__.py
+                python: CPython 3.13.7
+                root: C:\Users\kartik\MedWeave
+                startedAt: "2026-11-12T13:47:01.762378Z"
+                writerId: 01a1d003-0707-78c8-8eb1-5bdcc3fdeb35
+        m: []
+        python_version: 3.13.7
+        t:
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.13.7
+            "5": 0.31.0
+            "8":
+                - 3
+            "12": 0.31.0
+            "13": windows-amd64
+architecture:
+    value: Head-Backbone-Tail
+batch_size:
+    value: 64
+dataset:
+    value: PathMNIST
+institutions:
+    value: 4

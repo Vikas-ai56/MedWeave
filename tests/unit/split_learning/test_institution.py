@@ -1,4 +1,5 @@
 import copy
+from functools import partial
 
 import pytest
 import torch
@@ -156,3 +157,16 @@ def test_evaluation_helpers_keep_no_graph(institution, config, batch) -> None:
     assert not activations.requires_grad
     assert metrics.total == len(labels)
     institution.head_forward("b0", inputs)
+
+
+def test_custom_loss_function_is_used_for_the_tail_step(config: SplitModelConfig, batch) -> None:
+    inputs, labels = batch
+    output = fake_backbone_output(config)
+    losses = []
+    for loss_fn in (torch.nn.functional.cross_entropy, partial(torch.nn.functional.cross_entropy, label_smoothing=0.5)):
+        institution = Institution("inst-1", config, loss_fn=loss_fn)
+        institution.head_forward("b0", inputs)
+        losses.append(institution.tail_step("b0", output, labels).metrics.loss)
+
+    assert losses[0] != pytest.approx(losses[1])
+    assert create_institutions(["a"], config, loss_fn=losses.append)["a"].loss_fn == losses.append

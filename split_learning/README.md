@@ -27,6 +27,7 @@ Head.backward, optimizer step <─ d loss / d activations
 | File | Contents |
 | --- | --- |
 | `config.py` | `SplitModelConfig`: input shape, widths, split point, classes, seed |
+| `path_cnn.py` | `path_cnn_v1_config()`, `path_cnn_v2_config()`: the PathMNIST presets |
 | `head.py`, `backbone.py`, `tail.py` | The three `nn.Module`s and their `build_*` factories |
 | `layers.py` | The conv block shared by Head and Backbone |
 | `forward.py`, `backward.py` | Single-party pass functions (stateless) |
@@ -38,19 +39,24 @@ Head.backward, optimizer step <─ d loss / d activations
 
 ### Configuring the model
 
-Nothing here is fixed to one dataset. The system uses PathMNIST
-(`coordinator/flower_app/protocol.py`: `in_channels=3`, `num_classes=9`); the
-example shows the defaults:
+The engine itself is not tied to a dataset. The PathMNIST model is a preset
+(see [MedWeavePathCNN-v1](#medweavepathcnn-v1-pathmnist)), and the system's
+config lives in `coordinator/flower_app/protocol.py`. Every field:
 
 ```python
 SplitModelConfig(
     in_channels=1,                 # 3 for RGB
     image_size=(28, 28),           # used to validate tensors at every boundary
-    head_channels=(16,),           # one conv block (conv3x3, ReLU, maxpool2) per entry
+    head_channels=(16,),           # one conv block (conv3x3, [BN], ReLU, maxpool2) per entry
     backbone_channels=(32, 32),
     tail_hidden=(),                # hidden Linear layers in the Tail
     num_classes=2,
     seed=0,                        # same seed => same initial weights everywhere
+    batch_norm=False,              # BatchNorm2d after every conv
+    backbone_final_pool=True,      # False: last Backbone block keeps its spatial size
+    tail_dropout=0.0,              # Dropout before the Tail's classifier, in [0, 1)
+    group_norm=False,              # GroupNorm(8 groups) after every conv, instead of BatchNorm
+    convs_per_block=1,             # (conv, norm, ReLU) units per block before its pool
 )
 ```
 
@@ -59,6 +65,114 @@ point deeper. `config.head_output_shape` and `config.backbone_output_shape`
 give the per-sample shapes that cross each boundary. An invalid configuration,
 such as an image too small for the number of pooling blocks, raises
 `ValueError` when the config is created.
+
+The fields after `seed` only add layers when they are switched on, so the
+default placeholder CNN keeps the same `state_dict` keys as before they were
+introduced. `batch_norm` and `group_norm` cannot both be on, and `group_norm`
+needs every conv width to be divisible by 8.
+
+**BatchNorm or GroupNorm.** BatchNorm keeps running statistics, so the
+Backbone's statistics belong to whichever institution trained it last.
+GroupNorm normalises each sample on its own, so it has no running statistics
+and behaves the same in training and evaluation, and when data differs between
+institutions.
+
+## MedWeavePathCNN-v1 (PathMNIST)
+
+The model for the PathMNIST experiment: RGB 28×28 histology patches, 9 classes,
+trained with `CrossEntropyLoss`. It has no pretrained weights and about 95k
+parameters.
+
+```text
+                     INSTITUTION                COMPUTE PEER                 INSTITUTION
+input [B,3,28,28]
+  │
+  ├─ HEAD (stage 1) ─────────┐
+  │  Conv 3→32, BN, ReLU,    │
+  │  MaxPool                 │
+  │  → [B,32,14,14] ─────────┼──> BACKBONE (stages 2+3)
+  │                          │    Conv 32→64, BN, ReLU, MaxPool  → [B,64,7,7]
+  │                          │    Conv 64→128, BN, ReLU          → [B,128,7,7] ──> TAIL
+  │                          │                                                     AvgPool(1), Flatten
+  │                          │                                                     Dropout(0.2)
+  │                          │                                                     Linear 128→9
+  │                          │                                                     → [B,9] logits
+```
+
+| Component | Layers | Output | Parameters |
+| --- | --- | --- | --- |
+| Head | Conv2d(3, 32, 3, padding=1), BatchNorm2d(32), ReLU, MaxPool2d(2) | `[B, 32, 14, 14]` | 960 |
+| Backbone | Conv2d(32, 64, 3, padding=1), BatchNorm2d(64), ReLU, MaxPool2d(2) | `[B, 64, 7, 7]` | |
+| | Conv2d(64, 128, 3, padding=1), BatchNorm2d(128), ReLU | `[B, 128, 7, 7]` | 92,736 |
+| Tail | AdaptiveAvgPool2d(1), Flatten, Dropout(0.2), Linear(128, 9) | `[B, 9]` | 1,161 |
+
+The Tail returns raw logits. There is no softmax in the model, because
+`F.cross_entropy` applies log-softmax itself.
+
+### Four institutions and one shared Backbone
+
+```python
+from split_learning.backbone import build_backbone
+from split_learning.compute_peer import ComputePeer
+from split_learning.institution import create_institutions
+from split_learning.path_cnn import path_cnn_v1_config
+
+config = path_cnn_v1_config()      # default split: stage 1 | stages 2+3
+
+institutions = create_institutions(["inst-1", "inst-2", "inst-3", "inst-4"], config)
+canonical = build_backbone(config).state_dict()   # coordinator's initial checkpoint
+
+peer = ComputePeer(config)                        # any institution acting as compute peer
+peer.load_backbone(canonical, "0")
+```
+
+Each institution gets its own Head, Tail and Head/Tail optimizers. They start
+from identical weights (same `seed`), but no parameter or BatchNorm buffer is
+shared. The rest of the workflow is unchanged from the generic engine (see
+[Training and evaluation utilities](#training-and-evaluation-utilities)).
+
+**BatchNorm and checkpoints.** BatchNorm keeps `running_mean`, `running_var`
+and `num_batches_tracked` as buffers. They are part of `state_dict()`, so they
+travel in Backbone checkpoints and through `get_weights`/`weights_to_state`
+together with the weights. Each institution's Head statistics stay local, like
+its weights. `train_batches` puts modules in train mode (batch statistics,
+dropout on). `evaluate` uses eval mode (running statistics, dropout off).
+BatchNorm2d also works with a batch of one, because it normalises over
+`B×H×W`.
+
+### Changing the split point
+
+```python
+config = path_cnn_v1_config(head_stages=2)   # Head: stages 1+2, Backbone: stage 3
+config.head_output_shape                     # (64, 7, 7)
+config.backbone_output_shape                 # (128, 7, 7), unchanged
+```
+
+`head_stages` can be 1 (default) or 2. Stage 3 never pools, and it is always
+the last Backbone block, so the Backbone output shape and the Tail stay the
+same at either split point. For widths or stages beyond these two options,
+build a `SplitModelConfig` directly with the same `batch_norm`,
+`backbone_final_pool` and `tail_dropout` settings.
+
+A Backbone checkpoint only fits the split point it was trained with. Loading a
+`head_stages=1` checkpoint into a `head_stages=2` peer raises
+`CheckpointError`. Every participant must therefore use the same config.
+
+### MedWeavePathCNN-v2
+
+`path_cnn_v2_config(head_stages=1, seed=0)` gives v1 with two (Conv, BN, ReLU)
+units per stage (`convs_per_block=2`):
+
+| Component | Layers | Output | Parameters |
+| --- | --- | --- | --- |
+| Head | 2 × (Conv 3×3, BN, ReLU) at 32 channels, MaxPool | `[B, 32, 14, 14]` | 10,272 |
+| Backbone | 2 × (Conv 3×3, BN, ReLU) at 64, MaxPool; 2 × (Conv 3×3, BN, ReLU) at 128 | `[B, 128, 7, 7]` | 277,632 |
+| Tail | as v1 | `[B, 9]` | 1,161 |
+
+The boundary shapes match v1's, so nothing else in the engine changes. The
+receptive field grows from 18×18 to 32×32 pixels, which covers the whole 28×28 patch.
+v2 checkpoints do not load into v1 models and v1 checkpoints do not load into
+v2 models; loading one raises `CheckpointError`.
 
 ## How the forward pass works
 
@@ -118,6 +232,10 @@ They start with identical weights and share no storage. Pass
 the coordinator builds from its `optimizer` and `learning-rate` run settings.
 The engine default is SGD with `lr=0.01`; on PathMNIST it stays near the
 majority-class rate for hundreds of batches, so the system uses Adam (lr 1e-3).
+Pass `loss_fn` to change the training loss, e.g.
+`functools.partial(F.cross_entropy, label_smoothing=0.1)`. It must take
+`(logits, labels)` and return a scalar. `evaluate_tail` always reports plain
+cross-entropy.
 
 ## Using a compute peer
 
@@ -245,6 +363,11 @@ These need agreement and have **not** been changed in the shared documents:
    float32 `(B, 3, 28, 28)` inputs in [0, 1] and `torch.long` `(B,)` labels.
 5. **Noise hook (Member 3), implemented:** `privacy.GaussianActivationNoise`.
    See `docs/features/data-and-privacy.md`.
+6. **Model architecture.** `SPEC.md` §2.8 and §8 list the dataset and
+   architecture as deferred. MedWeavePathCNN-v1 assumes PathMNIST has now been
+   chosen. It lives in its own preset (`path_cnn.py`), and the engine remains
+   dataset-agnostic. The default `SplitModelConfig()` is still the placeholder
+   CNN. Services should build their config with `path_cnn_v1_config()`.
 
 ## Known limitations
 
@@ -252,11 +375,19 @@ These need agreement and have **not** been changed in the shared documents:
 - One batch in flight per party, which matches sequential training.
 - Backbone optimizer state is reset at every turn; only weights are
   checkpointed.
-- The layers are a small CNN (conv, optional GroupNorm, ReLU, max-pool per
-  block). The system turns GroupNorm on: on PathMNIST it lifts validation
-  accuracy from 0.654 to 0.762 at the same budget. BatchNorm is deliberately not
-  offered: the shared Backbone's running statistics follow whichever
-  institution trained last and mismatch the other institutions' Heads.
+- `SplitModelConfig()` defaults to a small placeholder CNN. PathMNIST uses
+  `path_cnn_v1_config()`.
+- GroupNorm (`group_norm=True`, fixed `NORM_GROUPS` = 8 groups) normalises each
+  sample on its own and keeps no running statistics. On PathMNIST it lifted the
+  placeholder CNN's validation accuracy from 0.654 to 0.762 at the same budget.
+- BatchNorm statistics in the Backbone are updated by whichever institution's
+  data passes through it, so they are shared like the weights and can mismatch
+  the other institutions' Heads at evaluation. The Flower system therefore uses
+  GroupNorm (docs/DECISIONS.md).
+- In MedWeavePathCNN-v1 each conv keeps its bias, as specified. A bias directly
+  before BatchNorm is cancelled by the mean subtraction and receives no
+  gradient. That costs 224 unused parameters. Setting `bias=False` would remove
+  them, but it would change the checkpoint keys.
 - Gradients sent to the peer are derived from the labels, a known split-learning
   leakage channel. The noise is a perturbation, not a formal privacy guarantee
   (SPEC §1.7).

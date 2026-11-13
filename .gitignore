@@ -5,3 +5,10 @@ __pycache__/
 .pytest_cache/
 .medweave_local/
 .medweave_verify/
+
+# experiment data and tracking
+data/
+mlflow.db
+mlruns/
+mlartifacts/
+wandb/

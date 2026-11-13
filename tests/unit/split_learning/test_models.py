@@ -1,7 +1,7 @@
 import torch
 
 from split_learning.backbone import build_backbone
-from split_learning.config import SplitModelConfig
+from split_learning.config import NORM_GROUPS, SplitModelConfig
 from split_learning.head import build_head
 from split_learning.tail import build_tail
 
@@ -17,6 +17,16 @@ def test_same_config_gives_identical_initial_weights(config: SplitModelConfig) -
         first, second = build(config), build(config)
         for a, b in zip(first.parameters(), second.parameters()):
             assert torch.equal(a, b)
+
+
+def test_default_layers_keep_their_checkpoint_keys() -> None:
+    config = SplitModelConfig()
+
+    assert list(build_head(config).state_dict()) == ["layers.0.weight", "layers.0.bias"]
+    assert list(build_backbone(config).state_dict()) == [
+        "layers.0.weight", "layers.0.bias", "layers.3.weight", "layers.3.bias",
+    ]
+    assert list(build_tail(config).state_dict()) == ["layers.2.weight", "layers.2.bias"]
 
 
 def test_building_does_not_disturb_global_rng(config: SplitModelConfig) -> None:
@@ -36,4 +46,4 @@ def test_group_norm_keeps_shapes_and_normalises_each_block() -> None:
 
     assert activations.shape[1:] == config.head_output_shape and output.shape[1:] == config.backbone_output_shape
     norms = [m for m in [*head.modules(), *backbone.modules()] if isinstance(m, torch.nn.GroupNorm)]
-    assert [m.num_groups for m in norms] == [4, 8, 8]
+    assert [m.num_groups for m in norms] == [NORM_GROUPS] * 3
