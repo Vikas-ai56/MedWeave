@@ -19,7 +19,8 @@ The coordinator runs a full Phase 1 session on one laptop:
 | Split-learning engine (Head, Backbone, Tail) | Member 2 | Done, used by the coordinator |
 | Scheduler, checkpoints, relay, Flower orchestration | Member 1 | Done, tested end to end |
 | Dataset loading and activation noise | Member 3 | Done: PathMNIST shards per institution, Gaussian activation noise (`docs/features/data-and-privacy.md`) |
-| Dashboard, database, Docker | Member 4 | **Not yet** |
+| Dashboard and metadata database | Member 4 (built by Member 1, redesigned by Member 2) | Done: live dashboard, see [`dashboard/README.md`](../dashboard/README.md) |
+| Docker | Member 4 | **Not yet** |
 
 Institutions train on their own PathMNIST shard (9 classes) with Adam
 (lr 0.001) and a small CNN with GroupNorm. Each turn is one pass over the
@@ -57,6 +58,9 @@ From the repo root:
 coordinator/flower_app/run_local.sh                               # 1 round
 coordinator/flower_app/run_local.sh --run-config "num-rounds=2"   # 2 rounds
 ```
+
+To watch it live, run `dashboard/run_dashboard.sh` in a second terminal and
+open http://127.0.0.1:8080.
 
 Expected output (other log lines removed):
 
@@ -166,23 +170,26 @@ gives exactly the same loss and weights as your in-process
 
 ### Member 4: dashboard, database and Docker
 
-**Data for the database.**
+**Dashboard and database (already built).**
+- The coordinator writes every session to SQLite at
+  `.medweave_local/coordinator/medweave.db`, using the SPEC §3.2 tables in
+  `database/schema.sql`.
+- `dashboard/run_dashboard.sh` serves the live dashboard at
+  http://127.0.0.1:8080.
+- To show more on the dashboard, add a hook to `SessionObserver` in
+  `coordinator/flower_app/observer.py`, then read the new data in
+  `dashboard/backend/snapshot.py`. Details are in
+  [`dashboard/README.md`](../dashboard/README.md).
+
+**Results in code.**
 - `CheckpointManager.commit()` returns a `CheckpointRecord` with `version`,
-  `storage_path`, `created_by` and `created_at`. This matches the
-  `model_checkpoints` table.
+  `storage_path`, `created_by` and `created_at`.
 - `run_session()` returns a `SessionResult`: `turns` holds a `TurnResult` per
   turn with `turn` (round, data owner, compute peer), `checkpoint`, `loss`,
   `accuracy`, `num_batches`, `seconds`, `noise_std` and
   `activation_change_pct`; `evaluations` holds a `RoundEvaluation` per round
-  with each institution's held-out `accuracy` and `loss`. This covers
-  `compute_assignments` and `training_events`.
-- Every session is also recorded in MLflow (`docs/features/experiment-tracking.md`):
-  the dashboard can read runs, metrics and artifacts from that store instead of
-  a new export. Nothing is written to the project database yet.
-
-**Live status for the dashboard.** `run_session(..., log=...)` takes a
-function that receives each status line. It currently prints them; it can be
-pointed at the dashboard backend instead.
+  with each institution's held-out `accuracy` and `loss`.
+- Every session is also recorded in MLflow (`docs/features/experiment-tracking.md`).
 
 **Docker, and later multiple laptops.**
 
@@ -259,7 +266,6 @@ institution code and a real HTTP relay, without starting Flower processes.
 - **No disconnect handling.** If a turn fails, the session stops and the
   Backbone is left unchanged. Skipping or retrying an offline institution is
   not built yet.
-- **No database yet** (section 5, Member 4).
 - **Test-set ownership is undecided**, so evaluation uses the validation split
   by default; `evaluation-split=test` works but is not the agreed protocol.
 - A restarted session continues from the latest Backbone but starts the turn

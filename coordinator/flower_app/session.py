@@ -22,6 +22,7 @@ from flwr.app import ArrayRecord, ConfigRecord, Message, RecordDict
 
 from coordinator.checkpoint_manager.manager import CheckpointManager, CheckpointRecord
 from coordinator.flower_app import protocol
+from coordinator.flower_app.observer import SessionObserver
 from coordinator.flower_app.protocol import TurnInfo
 from coordinator.relay.relay import Relay
 from coordinator.scheduling.schedule import Turn
@@ -81,7 +82,12 @@ class SessionResult:
 
 
 def register_institutions(
-    grid: Grid, expected: int, timeout: float, poll_interval: float = 2.0, log: Log = print
+    grid: Grid,
+    expected: int,
+    timeout: float,
+    poll_interval: float = 2.0,
+    log: Log = print,
+    observer: SessionObserver | None = None,
 ) -> dict[str, int]:
     """Wait for `expected` SuperNodes and return {institution_id: Flower node id}."""
     deadline = time.monotonic() + timeout
@@ -103,6 +109,7 @@ def register_institutions(
     if len(nodes) != len(node_ids):
         raise SessionError(f"{len(node_ids) - len(nodes)} node(s) did not answer registration")
     log(f"registered institutions: {', '.join(sorted(nodes))}")
+    (observer or SessionObserver()).institutions_registered(nodes)
     return nodes
 
 
@@ -118,23 +125,36 @@ def run_session(
     log: Log = print,
     evaluation: EvaluationSettings | None = None,
     tracker: Tracker | None = None,
+    observer: SessionObserver | None = None,
 ) -> SessionResult:
-    """Run every turn in order; each accepted turn adds one Backbone version."""
+    """Run every turn in order; each accepted turn adds one Backbone version.
+
+    The observer must already have been told `session_started`.
+    """
     tracker = tracker or NullTracker()
+    observer = observer or SessionObserver()
     turns: list[TurnResult] = []
     evaluations: list[RoundEvaluation] = []
-    for round_number, round_turns in groupby(schedule, key=lambda turn: turn.round_number):
-        for turn in round_turns:
-            result = run_turn(grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log)
-            tracker.log_metrics(turn_metrics(result), step=result.checkpoint.version)
-            turns.append(result)
-        if evaluation is not None:
-            round_evaluation = evaluate_institutions(grid, nodes, manager, round_number, evaluation, log)
-            tracker.log_metrics(evaluation_metrics(round_evaluation), step=round_number)
-            evaluations.append(round_evaluation)
+    try:
+        for round_number, round_turns in groupby(schedule, key=lambda turn: turn.round_number):
+            for turn in round_turns:
+                connected = set(grid.get_node_ids())
+                observer.connection_checked({member: node in connected for member, node in nodes.items()})
+                result = run_turn(
+                    grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, observer
+                )
+                tracker.log_metrics(turn_metrics(result), step=result.checkpoint.version)
+                turns.append(result)
+            if evaluation is not None:
+                round_evaluation = evaluate_institutions(grid, nodes, manager, round_number, evaluation, log)
+                tracker.log_metrics(evaluation_metrics(round_evaluation), step=round_number)
+                evaluations.append(round_evaluation)
+    except Exception as error:
+        observer.session_failed(str(error))
+        raise
     log(f"session complete: coordinator holds Backbone v{manager.latest_version}")
+    observer.session_finished(manager.latest_version)
     return SessionResult(turns, evaluations)
-
 
 def turn_metrics(result: TurnResult) -> dict[str, float]:
     return {
@@ -211,12 +231,38 @@ def run_turn(
     num_batches: int,
     turn_timeout: float,
     log: Log = print,
+    observer: SessionObserver | None = None,
 ) -> TurnResult:
     """Send the Backbone to the peer and start the owner, then commit the peer's update."""
     for member in (turn.data_owner_id, turn.compute_peer_id):
         if member not in nodes:
             raise SessionError(f"{member!r} is not registered")
+    observer = observer or SessionObserver()
     state, version = manager.latest()
+    observer.turn_started(turn, version, num_batches)
+    try:
+        result = _exchange(grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, state, version)
+    except Exception as error:
+        observer.turn_failed(turn, str(error))
+        raise
+    observer.checkpoint_saved(result.checkpoint)
+    observer.turn_finished(turn, result.loss, result.accuracy, result.num_batches)
+    return result
+
+
+def _exchange(
+    grid: Grid,
+    nodes: dict[str, int],
+    turn: Turn,
+    manager: CheckpointManager,
+    relay: Relay,
+    relay_url: str,
+    num_batches: int,
+    turn_timeout: float,
+    log: Log,
+    state: dict,
+    version: str,
+) -> TurnResult:
     info = TurnInfo(
         turn.round_number, turn.data_owner_id, turn.compute_peer_id, version, relay_url, num_batches, turn_timeout
     ).to_record()
