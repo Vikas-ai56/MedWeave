@@ -7,8 +7,11 @@ institution, untrained Head) so noise_std values can be chosen relative to activ
 condition starts from the same initial weights (SplitModelConfig seed), the same shards and the same
 batch order, and follows the coordinator's rotation (build_schedule: each institution trains
 `--batches-per-turn` batches per round through the shared Backbone, computed by the next institution).
-Each party has its own optimizer (default Adam, lr 1e-3: the engine's default SGD lr 0.01 stays at
-the majority-class rate on PathMNIST for this many batches). After each turn the data owner's own Head and Tail are evaluated with the new Backbone on the official
+Each party has its own optimizer. The defaults are the Flower session's recipe (pyproject.toml): AdamW
+lr 1e-3 with weight decay 1e-4, one learning rate per turn from a cosine schedule with 5% warm-up, and
+flip/rotation/colour-jitter augmentation seeded per institution and round, exactly as the ClientApp
+does it; `--optimizer adam --weight-decay 0 --lr-schedule constant --no-augment` is the earlier
+setting. (The engine's default SGD lr 0.01 stays at the majority-class rate on PathMNIST.) After each turn the data owner's own Head and Tail are evaluated with the new Backbone on the official
 validation split, with clean activations by default or, with `--evaluation noisy`, with the same noise
 level as training (its own seed stream); the mode is written into every row. Test-split evaluation is deliberately
 absent until the team decides who owns the test set. Writes one CSV row per turn and a JSON file with the
@@ -41,12 +44,14 @@ from institution_data import (
     open_institution_training,
     training_loader,
 )
+from institution_data.augment import Augment, augmented_batches
 from institution_data.provision import MANIFEST_FILE, partition_dir
 from privacy import GaussianActivationNoise, derive_seed
 from split_learning.backbone import build_backbone
 from split_learning.compute_peer import ComputePeer
-from split_learning.config import OPTIMIZERS, optimizer_factory
+from split_learning.config import OPTIMIZERS, optimizer_factory, set_learning_rate
 from split_learning.institution import create_institutions
+from split_learning.schedule import SCHEDULES, LRSchedule
 from split_learning.training import evaluate, train_batches
 from tracking import TRACKING_KINDS, NullTracker, Tracker, open_tracker, source_tags
 
@@ -61,6 +66,11 @@ class Settings:
     batch_size: int
     optimizer: str
     learning_rate: float
+    weight_decay: float
+    lr_schedule: str
+    lr_warmup: float
+    augment: bool
+    augment_jitter: float
     partition_seed: int
     noise_seed: int
     evaluation: str
@@ -114,19 +124,27 @@ def train_condition(
     log,
     tracker: Tracker,
 ) -> list[TurnRow]:
-    optimizer = optimizer_factory(settings.optimizer, settings.learning_rate)
+    optimizer = optimizer_factory(settings.optimizer, settings.learning_rate, settings.weight_decay)
     institution_ids = list(shards)
+    schedule = build_schedule(institution_ids, settings.rounds)
+    lr_schedule = LRSchedule(settings.lr_schedule, len(schedule), settings.lr_warmup)
     institutions = create_institutions(institution_ids, MODEL_CONFIG, optimizer)
     peers = {institution_id: ComputePeer(MODEL_CONFIG, optimizer) for institution_id in institution_ids}
     canonical, version = build_backbone(MODEL_CONFIG).state_dict(), 0
     rows = []
-    for turn in build_schedule(institution_ids, settings.rounds):
+    for index, turn in enumerate(schedule):
         started = time.monotonic()
         owner, peer = institutions[turn.data_owner_id], peers[turn.compute_peer_id]
         peer.load_backbone(canonical, str(version))
+        learning_rate = settings.learning_rate * lr_schedule.factor(index)  # one rate per turn, as the coordinator sends
+        for turn_optimizer in (peer.optimizer, owner.head_optimizer, owner.tail_optimizer):
+            set_learning_rate(turn_optimizer, learning_rate)
         batches = training_loader(
             shards[turn.data_owner_id], settings.batch_size, settings.partition_seed, turn.round_number, settings.batches_per_turn
         )
+        if settings.augment:  # same seed as client_app.turn_batches
+            seed = derive_seed(settings.partition_seed, "augment", turn.data_owner_id, turn.round_number)
+            batches = augmented_batches(batches, Augment(settings.augment_jitter), seed)
         noise = GaussianActivationNoise(noise_std, derive_seed(settings.noise_seed, turn.data_owner_id, turn.round_number))
         trained = train_batches(owner, peer, batches, perturb=noise)
         canonical, version = peer.backbone_update().state_dict, version + 1
@@ -217,8 +235,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--batches-per-turn", type=int, default=351)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adam")
+    parser.add_argument("--optimizer", choices=sorted(OPTIMIZERS), default="adamw")
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr-schedule", choices=SCHEDULES, default="cosine")
+    parser.add_argument("--lr-warmup", type=float, default=0.05)
+    parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--augment-jitter", type=float, default=0.2)
     parser.add_argument("--partition-seed", type=int, default=0)
     parser.add_argument("--noise-seed", type=int, default=0)
     parser.add_argument("--evaluation", choices=["clean", "noisy"], default="clean")
@@ -244,6 +267,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         batch_size=options.batch_size,
         optimizer=options.optimizer,
         learning_rate=options.learning_rate,
+        weight_decay=options.weight_decay,
+        lr_schedule=options.lr_schedule,
+        lr_warmup=options.lr_warmup,
+        augment=options.augment,
+        augment_jitter=options.augment_jitter,
         partition_seed=options.partition_seed,
         noise_seed=options.noise_seed,
         evaluation=options.evaluation,

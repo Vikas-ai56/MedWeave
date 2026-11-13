@@ -1,0 +1,27 @@
+{
+  "noise_stds": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.25
+  ],
+  "rounds": 3,
+  "batches_per_turn": 351,
+  "batch_size": 64,
+  "optimizer": "adamw",
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "lr_schedule": "cosine",
+  "lr_warmup": 0.05,
+  "augment": true,
+  "augment_jitter": 0.2,
+  "partition_seed": 0,
+  "noise_seed": 0,
+  "evaluation": "clean",
+  "data_dir": "/Users/udit/.medweave/data",
+  "source_md5": "a8b06965200029087d5bd730944a56c1",
+  "model": "SplitModelConfig(in_channels=3, image_size=(28, 28), head_channels=(32,), backbone_channels=(64, 128), tail_hidden=(), num_classes=9, seed=0, batch_norm=False, backbone_final_pool=False, tail_dropout=0.2, group_norm=True, convs_per_block=1)",
+  "evaluation_split": "official validation"
+}
