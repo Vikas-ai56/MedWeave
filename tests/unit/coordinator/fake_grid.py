@@ -7,7 +7,16 @@ from flwr.app import Context, Error, Message, RecordDict
 from coordinator.flower_app import client_app, protocol
 
 IDS = ["inst-1", "inst-2", "inst-3", "inst-4"]
-RUN_CONFIG = {"optimizer": "adam", "learning-rate": 0.001, "partition-seed": 0, "batch-size": 4, "noise-std": 0.1, "noise-seed": 0}
+RUN_CONFIG = {
+    "optimizer": "adamw",
+    "weight-decay": 0.0001,
+    "partition-seed": 0,
+    "batch-size": 4,
+    "augment": True,
+    "augment-jitter": 0.2,
+    "noise-std": 0.1,
+    "noise-seed": 0,
+}
 HANDLERS = {
     protocol.REGISTER: client_app.register,
     protocol.TRAIN_AS_PEER: client_app.compute_for_peer,

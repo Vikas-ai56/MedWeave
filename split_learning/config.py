@@ -11,20 +11,29 @@ NORM_GROUPS = 8
 OptimizerFactory = Callable[[Iterable[nn.Parameter]], Optimizer]
 
 
-OPTIMIZERS: dict[str, type[Optimizer]] = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}
+OPTIMIZERS: dict[str, type[Optimizer]] = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW, "sgd": torch.optim.SGD}
 
 
 def default_optimizer(parameters: Iterable[nn.Parameter]) -> Optimizer:
     return torch.optim.SGD(parameters, lr=0.01)
 
 
-def optimizer_factory(name: str, learning_rate: float) -> OptimizerFactory:
+def optimizer_factory(name: str, learning_rate: float, weight_decay: float = 0.0) -> OptimizerFactory:
+    """Named optimizer at `learning_rate`; `weight_decay` is decoupled for AdamW and L2 for Adam and SGD."""
     if name not in OPTIMIZERS:
         raise ValueError(f"optimizer must be one of {sorted(OPTIMIZERS)}, got {name!r}")
     if not learning_rate > 0:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+    if not weight_decay >= 0:
+        raise ValueError(f"weight_decay must be >= 0, got {weight_decay}")
     optimizer_class = OPTIMIZERS[name]
-    return lambda parameters: optimizer_class(parameters, lr=learning_rate)
+    return lambda parameters: optimizer_class(parameters, lr=learning_rate, weight_decay=weight_decay)
+
+
+def set_learning_rate(optimizer: Optimizer, learning_rate: float) -> None:
+    """Set every parameter group's learning rate, e.g. after loading optimizer state that restored an old one."""
+    for group in optimizer.param_groups:
+        group["lr"] = learning_rate
 
 
 @dataclass(frozen=True)

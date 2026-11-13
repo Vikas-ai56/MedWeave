@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from split_learning.backbone import build_backbone
-from split_learning.config import SplitModelConfig, optimizer_factory
+from split_learning.config import SplitModelConfig, optimizer_factory, set_learning_rate
 from split_learning.head import build_head
 from split_learning.tail import build_tail
 
@@ -66,3 +66,13 @@ def test_optimizer_factory_builds_the_named_optimizer() -> None:
         optimizer_factory("rmsprop", 0.1)
     with pytest.raises(ValueError, match="learning_rate"):
         optimizer_factory("adam", 0.0)
+
+
+def test_adamw_takes_weight_decay_and_the_learning_rate_can_be_reset() -> None:
+    parameters = [torch.nn.Parameter(torch.ones(2))]
+    adamw = optimizer_factory("adamw", 0.001, weight_decay=1e-4)(parameters)
+    assert isinstance(adamw, torch.optim.AdamW) and adamw.param_groups[0]["weight_decay"] == 1e-4
+    with pytest.raises(ValueError, match="weight_decay"):
+        optimizer_factory("adamw", 0.001, weight_decay=-1.0)
+    set_learning_rate(adamw, 0.0005)
+    assert adamw.param_groups[0]["lr"] == 0.0005

@@ -13,7 +13,7 @@ accuracy, activation change, seconds) and every evaluation at step = round numbe
 """
 
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from itertools import groupby
 from typing import Protocol
@@ -52,6 +52,7 @@ class TurnResult:
     seconds: float
     noise_std: float
     activation_change_pct: float
+    learning_rate: float = protocol.DEFAULT_LEARNING_RATE
 
 
 @dataclass(frozen=True)
@@ -126,11 +127,20 @@ def run_session(
     evaluation: EvaluationSettings | None = None,
     tracker: Tracker | None = None,
     observer: SessionObserver | None = None,
+    learning_rates: Sequence[float] | None = None,
 ) -> SessionResult:
     """Run every turn in order; each accepted turn adds one Backbone version.
 
+    `learning_rates[i]` is the rate turn i trains at (one per turn in `schedule`);
+    without it every turn uses `protocol.DEFAULT_LEARNING_RATE`.
     The observer must already have been told `session_started`.
     """
+    schedule = list(schedule)
+    if learning_rates is None:
+        learning_rates = [protocol.DEFAULT_LEARNING_RATE] * len(schedule)
+    if len(learning_rates) != len(schedule):
+        raise ValueError(f"need one learning rate per turn: {len(learning_rates)} for {len(schedule)} turns")
+    rates = iter(learning_rates)
     tracker = tracker or NullTracker()
     observer = observer or SessionObserver()
     turns: list[TurnResult] = []
@@ -141,7 +151,7 @@ def run_session(
                 connected = set(grid.get_node_ids())
                 observer.connection_checked({member: node in connected for member, node in nodes.items()})
                 result = run_turn(
-                    grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, observer
+                    grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, observer, next(rates)
                 )
                 tracker.log_metrics(turn_metrics(result), step=result.checkpoint.version)
                 turns.append(result)
@@ -162,6 +172,7 @@ def turn_metrics(result: TurnResult) -> dict[str, float]:
         "train_accuracy": result.accuracy,
         "activation_change_pct": result.activation_change_pct,
         "turn_seconds": result.seconds,
+        "learning_rate": result.learning_rate,
         f"train_accuracy/{result.turn.data_owner_id}": result.accuracy,
     }
 
@@ -232,6 +243,7 @@ def run_turn(
     turn_timeout: float,
     log: Log = print,
     observer: SessionObserver | None = None,
+    learning_rate: float = protocol.DEFAULT_LEARNING_RATE,
 ) -> TurnResult:
     """Send the Backbone to the peer and start the owner, then commit the peer's update."""
     for member in (turn.data_owner_id, turn.compute_peer_id):
@@ -241,7 +253,9 @@ def run_turn(
     state, version = manager.latest()
     observer.turn_started(turn, version, num_batches)
     try:
-        result = _exchange(grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, state, version)
+        result = _exchange(
+            grid, nodes, turn, manager, relay, relay_url, num_batches, turn_timeout, log, state, version, learning_rate
+        )
     except Exception as error:
         observer.turn_failed(turn, str(error))
         raise
@@ -262,9 +276,17 @@ def _exchange(
     log: Log,
     state: dict,
     version: str,
+    learning_rate: float,
 ) -> TurnResult:
     info = TurnInfo(
-        turn.round_number, turn.data_owner_id, turn.compute_peer_id, version, relay_url, num_batches, turn_timeout
+        turn.round_number,
+        turn.data_owner_id,
+        turn.compute_peer_id,
+        version,
+        relay_url,
+        num_batches,
+        turn_timeout,
+        learning_rate,
     ).to_record()
     peer_node, owner_node = nodes[turn.compute_peer_id], nodes[turn.data_owner_id]
     messages = [
@@ -284,7 +306,7 @@ def _exchange(
 
     log(
         f"round {turn.round_number}: {turn.data_owner_id} trains, "
-        f"{turn.compute_peer_id} computes, Backbone v{version}"
+        f"{turn.compute_peer_id} computes, Backbone v{version}, learning rate {learning_rate:.2e}"
     )
     started = time.monotonic()
     relay.open_turn(turn.data_owner_id, turn.compute_peer_id, version)
@@ -322,6 +344,7 @@ def _exchange(
         seconds=time.monotonic() - started,
         noise_std=float(metrics["noise_std"]),
         activation_change_pct=float(metrics["activation_change_pct"]),
+        learning_rate=learning_rate,
     )
     log(
         f"  done in {result.seconds:.1f}s: {result.num_batches} batches, loss {result.loss:.3f}, "

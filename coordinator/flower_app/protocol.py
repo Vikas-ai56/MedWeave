@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 
 from flwr.app import ConfigRecord, MessageType
 
-from split_learning.config import SplitModelConfig
+from split_learning.path_cnn import path_cnn_v1_config
 
 REGISTER = f"{MessageType.QUERY}.register"
 TRAIN_AS_PEER = f"{MessageType.TRAIN}.peer"
@@ -26,7 +26,10 @@ EVALUATION = "evaluation"
 INFO = "info"
 INSTITUTION_ID = "institution-id"
 
-MODEL_CONFIG = SplitModelConfig(in_channels=3, image_size=(28, 28), num_classes=9, group_norm=True)
+# MedWeavePathCNN-v1 with GroupNorm: the model behind the measured 0.883 test accuracy
+# (docs/integration_plan.md). Every party builds its models from this one value.
+MODEL_CONFIG = path_cnn_v1_config(norm="group")
+DEFAULT_LEARNING_RATE = 1e-3
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ class TurnInfo:
     relay_url: str
     num_batches: int
     timeout: float
+    learning_rate: float = DEFAULT_LEARNING_RATE  # this turn's rate from the session's schedule, for owner and peer
 
     def to_record(self) -> ConfigRecord:
         return ConfigRecord(asdict(self))
@@ -54,4 +58,5 @@ class TurnInfo:
             relay_url=str(record["relay_url"]),
             num_batches=int(record["num_batches"]),
             timeout=float(record["timeout"]),
+            learning_rate=float(record["learning_rate"]),
         )

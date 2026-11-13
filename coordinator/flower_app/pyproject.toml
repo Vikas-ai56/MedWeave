@@ -22,19 +22,25 @@ clientapp = "client_app:app"
 
 [tool.flwr.app.config]
 num-institutions = 4
-num-rounds = 2
+num-rounds = 3
 batches-per-turn = 351
 turn-timeout = 300.0
 registration-timeout = 120.0
 relay-host = "127.0.0.1"
 relay-port = 8765
 relay-url = "http://127.0.0.1:8765"
-optimizer = "adam"
+optimizer = "adamw"
 learning-rate = 0.001
+weight-decay = 0.0001
+lr-schedule = "cosine"
+lr-warmup = 0.05
+augment = true
+augment-jitter = 0.2
 partition-seed = 0
 batch-size = 64
 noise-std = 0.0
 noise-seed = 0
 evaluation-split = "val"
 evaluation-batch-size = 512
+final-evaluation-split = "none"
 tracking = "mlflow"

@@ -22,6 +22,7 @@ from coordinator.scheduling.schedule import Turn, build_schedule
 from split_learning.backbone import build_backbone
 from tracking import NullTracker
 
+
 class RecordingTracker(NullTracker):
     def __init__(self):
         self.metrics = []
@@ -108,6 +109,49 @@ def test_full_session_with_four_institutions_and_two_rounds(manager, relay_serve
     assert [step for step, _ in turn_logs] == list(range(1, 9))
     assert [step for step, _ in round_logs] == [1, 2]
     assert {f"val_accuracy/{institution_id}" for institution_id in IDS} <= set(round_logs[0][1])
+
+
+class TurnRecordingGrid(FakeGrid):
+    """Also keeps the TurnInfo of every training message, keyed by message type."""
+
+    def __init__(self, institution_ids):
+        super().__init__(institution_ids)
+        self.turns = []
+
+    def send_and_receive(self, messages, *, timeout=None):
+        messages = list(messages)
+        self.turns += [
+            (m.metadata.message_type, protocol.TurnInfo.from_record(m.content[protocol.TURN]))
+            for m in messages
+            if protocol.TURN in m.content
+        ]
+        return super().send_and_receive(messages, timeout=timeout)
+
+
+def test_each_turn_trains_at_its_scheduled_learning_rate(manager, relay_server, state_dir):
+    grid = TurnRecordingGrid(IDS)
+    nodes, manager, relay, url = turn_args(grid, manager, relay_server)
+    rates = [8e-3, 7e-3, 6e-3, 5e-3, 4e-3, 3e-3, 2e-3, 1e-3]
+
+    session = run_session(
+        grid, nodes, build_schedule(IDS, 2), manager, relay, url, 1, 30, log=quiet, learning_rates=rates
+    )
+
+    assert [result.learning_rate for result in session.turns] == rates
+    peer_rates = [turn.learning_rate for kind, turn in grid.turns if kind == protocol.TRAIN_AS_PEER]
+    owner_rates = [turn.learning_rate for kind, turn in grid.turns if kind == protocol.TRAIN_AS_OWNER]
+    assert peer_rates == owner_rates == rates
+    # inst-1 trained in turns 0 and 4: its saved optimizers carry turn 4's rate, not the one restored from turn 0
+    saved = torch.load(state_dir / "institutions" / "inst-1.pt", weights_only=True)
+    assert saved["head_optimizer"]["param_groups"][0]["lr"] == rates[4]
+    assert saved["tail_optimizer"]["param_groups"][0]["lr"] == rates[4]
+
+
+def test_learning_rates_must_match_the_schedule(manager, relay_server):
+    grid = FakeGrid(IDS)
+    nodes, manager, relay, url = turn_args(grid, manager, relay_server)
+    with pytest.raises(ValueError, match="one learning rate per turn"):
+        run_session(grid, nodes, build_schedule(IDS, 1), manager, relay, url, 1, 30, log=quiet, learning_rates=[1e-3])
 
 
 def test_evaluation_failure_names_the_institution(manager, relay_server):

@@ -299,3 +299,11 @@ def test_group_norm_variant_trains_and_keeps_no_running_statistics(v1: SplitMode
     assert list(peer.backbone.buffers()) == [] and list(institution.head.buffers()) == []
     metrics = train_step(institution, peer, *synthetic_batches(grouped, 1)[0])
     assert metrics.total == BATCH_SIZE
+
+
+def test_norm_option_selects_group_norm_and_rejects_unknown_values(v1: SplitModelConfig) -> None:
+    grouped = path_cnn_v1_config(norm="group")
+    assert grouped == dataclasses.replace(v1, batch_norm=False, group_norm=True)
+    assert path_cnn_v2_config(norm="group").group_norm and path_cnn_v2_config(norm="group").convs_per_block == 2
+    with pytest.raises(ValueError, match="norm"):
+        path_cnn_v1_config(norm="layer")

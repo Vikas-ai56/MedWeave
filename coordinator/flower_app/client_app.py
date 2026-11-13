@@ -11,10 +11,17 @@ instead of waiting for its timeout.
 
 As data owner it trains on its own provisioned PathMNIST shard (`institution_data`,
 data root `$MEDWEAVE_DATA_DIR`) and perturbs the Head activations with
-`privacy.GaussianActivationNoise` before they are sent. Both roles build their
-optimizers from the `optimizer` and `learning-rate` run settings, so the Head,
-Tail and Backbone always train with the same optimizer. Run settings used:
-`optimizer`, `learning-rate`, `partition-seed`, `batch-size`, `noise-std`, `noise-seed`.
+`privacy.GaussianActivationNoise` before they are sent. With `augment = true` its
+training batches get random flips, 90° rotations and colour jitter
+(`institution_data.augment`), seeded per institution and round.
+
+Both roles build their optimizers from the `optimizer` and `weight-decay` run
+settings at the learning rate the coordinator sends in `TurnInfo` (one per turn,
+from the session's schedule), so the Head, Tail and Backbone always train with
+the same optimizer and rate. The rate is applied after an institution checkpoint
+is loaded, because loading optimizer state restores the previous turn's rate.
+Run settings used: `optimizer`, `weight-decay`, `partition-seed`, `batch-size`,
+`augment`, `augment-jitter`, `noise-std`, `noise-seed`.
 """
 
 import os
@@ -25,14 +32,15 @@ from flwr.app import ArrayRecord, ConfigRecord, Context, Message, MetricRecord, 
 from flwr.clientapp import ClientApp
 
 from coordinator.flower_app import protocol
-from coordinator.flower_app.protocol import MODEL_CONFIG, TurnInfo
+from coordinator.flower_app.protocol import DEFAULT_LEARNING_RATE, MODEL_CONFIG, TurnInfo
 from coordinator.flower_app.roles import Batch, run_owner_turn, run_peer_turn
 from coordinator.relay.transport import RelayClient
 from institution_data import default_data_dir, evaluation_loader, open_evaluation, open_institution_training, training_loader
+from institution_data.augment import Augment, augmented_batches
 from privacy import GaussianActivationNoise, derive_seed
 from split_learning.checkpoint import load_institution_checkpoint, save_institution_checkpoint
 from split_learning.compute_peer import ComputePeer
-from split_learning.config import OptimizerFactory, optimizer_factory
+from split_learning.config import OptimizerFactory, optimizer_factory, set_learning_rate
 from split_learning.institution import Institution
 from split_learning.training import evaluate
 
@@ -44,8 +52,9 @@ def state_dir() -> Path:
     return Path(os.environ.get("MEDWEAVE_STATE_DIR", Path.home() / ".medweave"))
 
 
-def session_optimizer(context: Context) -> OptimizerFactory:
-    return optimizer_factory(str(context.run_config["optimizer"]), float(context.run_config["learning-rate"]))
+def session_optimizer(context: Context, learning_rate: float) -> OptimizerFactory:
+    settings = context.run_config
+    return optimizer_factory(str(settings["optimizer"]), learning_rate, float(settings["weight-decay"]))
 
 
 def institution_id(context: Context) -> str:
@@ -55,18 +64,24 @@ def institution_id(context: Context) -> str:
         raise ValueError(f"SuperNode was started without --node-config '{protocol.INSTITUTION_ID}=...'") from None
 
 
-def local_institution(me: str, context: Context) -> tuple[Institution, Path]:
-    institution = Institution(me, MODEL_CONFIG, session_optimizer(context))
+def local_institution(me: str, context: Context, learning_rate: float) -> tuple[Institution, Path]:
+    institution = Institution(me, MODEL_CONFIG, session_optimizer(context, learning_rate))
     checkpoint = state_dir() / "institutions" / f"{me}.pt"
     if checkpoint.exists():
         load_institution_checkpoint(checkpoint, institution)
+        for optimizer in (institution.head_optimizer, institution.tail_optimizer):
+            set_learning_rate(optimizer, learning_rate)
     return institution, checkpoint
 
 
 def turn_batches(me: str, settings: UserConfig, turn: TurnInfo) -> Iterator[Batch]:
     partition_seed = int(settings["partition-seed"])
     local_data = open_institution_training(default_data_dir(), partition_seed, me)
-    yield from training_loader(local_data, int(settings["batch-size"]), partition_seed, turn.round_number, turn.num_batches)
+    batches = training_loader(local_data, int(settings["batch-size"]), partition_seed, turn.round_number, turn.num_batches)
+    if bool(settings["augment"]):
+        augment = Augment(float(settings["augment-jitter"]))
+        batches = augmented_batches(batches, augment, derive_seed(partition_seed, "augment", me, turn.round_number))
+    yield from batches
 
 
 @app.query("register")
@@ -83,7 +98,7 @@ def compute_for_peer(msg: Message, context: Context) -> Message:
     if turn.peer_id != me:
         raise ValueError(f"{me} received a compute-peer message meant for {turn.peer_id}")
 
-    peer = ComputePeer(MODEL_CONFIG, session_optimizer(context))
+    peer = ComputePeer(MODEL_CONFIG, session_optimizer(context, turn.learning_rate))
     peer.load_backbone(msg.content[protocol.BACKBONE].to_torch_state_dict(), turn.backbone_version)
     update = run_peer_turn(peer, RelayClient(turn.relay_url), me, turn.timeout)
 
@@ -104,7 +119,7 @@ def train_own_data(msg: Message, context: Context) -> Message:
     if turn.owner_id != me:
         raise ValueError(f"{me} received a data-owner message meant for {turn.owner_id}")
 
-    institution, checkpoint = local_institution(me, context)
+    institution, checkpoint = local_institution(me, context, turn.learning_rate)
     settings = context.run_config
     noise = GaussianActivationNoise(
         float(settings["noise-std"]), derive_seed(int(settings["noise-seed"]), me, turn.round_number)
@@ -138,7 +153,7 @@ def train_own_data(msg: Message, context: Context) -> Message:
 def evaluate_locally(msg: Message, context: Context) -> Message:
     me = institution_id(context)
     request = msg.content[protocol.EVALUATION]
-    institution, _ = local_institution(me, context)
+    institution, _ = local_institution(me, context, DEFAULT_LEARNING_RATE)  # evaluation never steps
     backbone = ComputePeer(MODEL_CONFIG)
     backbone.load_backbone(msg.content[protocol.BACKBONE].to_torch_state_dict(), str(request["backbone_version"]))
     held_out = open_evaluation(default_data_dir(), str(request["split"]))
