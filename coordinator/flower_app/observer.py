@@ -19,6 +19,8 @@ class SessionObserver:
 
     def session_started(self, schedule: list[Turn], num_rounds: int) -> None: ...
 
+    def noise_configured(self, mechanism: str, noise_scale: float) -> None: ...
+
     def checkpoint_saved(self, record: CheckpointRecord) -> None: ...
 
     def connection_checked(self, online: dict[str, bool]) -> None: ...
@@ -57,6 +59,11 @@ class DatabaseObserver(SessionObserver):
         for institution_id in self._pending_registrations:
             self.store.add_event(self.session_id, institution_id, "registration", f"{institution_id} registered")
         self._pending_registrations.clear()
+
+    def noise_configured(self, mechanism: str, noise_scale: float) -> None:
+        session_id = self._require_session()
+        self.store.add_noise_configuration(session_id, mechanism, noise_scale)
+        self.store.add_event(session_id, None, "training", f"{mechanism} activation noise, std {noise_scale:g}")
 
     def checkpoint_saved(self, record: CheckpointRecord) -> None:
         session_id = self._require_session()

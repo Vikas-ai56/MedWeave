@@ -110,3 +110,14 @@ def test_offline_institution_is_marked_before_the_turn(store, state_dir):
     observer.connection_checked({iid: iid != "inst-3" for iid in nodes})
     statuses = {i["id"]: i["status"] for i in snapshot(store)["institutions"]}
     assert statuses == {"inst-1": "online", "inst-2": "online", "inst-3": "offline", "inst-4": "online"}
+
+
+def test_noise_configuration_reaches_the_dashboard(store, state_dir):
+    observer = DatabaseObserver(store)
+    observer.session_started(build_schedule(IDS, 1), 1)
+    assert snapshot(store)["noise"] is None
+
+    observer.noise_configured("gaussian", 0.25)
+    view = snapshot(store)
+    assert view["noise"] == {"mechanism": "gaussian", "noise_scale": 0.25}
+    assert any("activation noise" in event["message"] for event in view["events"])

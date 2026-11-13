@@ -61,6 +61,9 @@ def run_coordinator(grid: Grid, config: UserConfig, tracker: Tracker, observer: 
     num_rounds = int(config["num-rounds"])
     schedule = build_schedule(sorted(nodes), num_rounds)
     observer.session_started(schedule, num_rounds)
+    noise_std = float(config["noise-std"])
+    if noise_std > 0:  # every institution reads the same setting (client_app.train_own_data)
+        observer.noise_configured("gaussian", noise_std)
 
     manager = CheckpointManager(Path(state_dir()) / "coordinator" / "checkpoints")
     if manager.latest_version is None:
