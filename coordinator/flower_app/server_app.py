@@ -12,6 +12,9 @@ per turn, which each turn's `TurnInfo` carries to both parties.
 `final-evaluation-split` (default `none`) scores every institution once more on
 that split after the last round, e.g. `test`. Who may use the test split is a
 team decision (docs/features/data-and-privacy.md), so it is off by default.
+
+TLS: with MEDWEAVE_TLS_CERT and MEDWEAVE_TLS_KEY set, the relay serves HTTPS, and
+`relay-url` must then start with https:// (and plain http:// without them).
 """
 
 from dataclasses import asdict
@@ -32,7 +35,7 @@ from coordinator.flower_app.session import (
     run_session,
 )
 from coordinator.relay.relay import Relay
-from coordinator.relay.transport import RelayServer
+from coordinator.relay.transport import RelayServer, tls_from_env
 from coordinator.scheduling.schedule import build_schedule
 from database.store import MetadataStore
 from split_learning.backbone import build_backbone
@@ -97,15 +100,21 @@ def run_coordinator(grid: Grid, config: UserConfig, tracker: Tracker, observer: 
     lr_schedule = LRSchedule(str(config["lr-schedule"]), len(schedule), float(config["lr-warmup"]))
     learning_rates = [base_rate * lr_schedule.factor(index) for index in range(len(schedule))]
 
+    relay_url, tls = str(config["relay-url"]), tls_from_env()
+    if relay_url.startswith("https://") != (tls is not None):
+        raise ValueError(
+            f"relay-url {relay_url!r} does not match the relay's TLS setting: "
+            "use https:// with MEDWEAVE_TLS_CERT/MEDWEAVE_TLS_KEY set, http:// without them"
+        )
     relay = Relay(on_message=observer.message_relayed)
-    with RelayServer(relay, str(config["relay-host"]), int(config["relay-port"])):
+    with RelayServer(relay, str(config["relay-host"]), int(config["relay-port"]), tls=tls):
         session = run_session(
             grid,
             nodes,
             schedule,
             manager,
             relay,
-            str(config["relay-url"]),
+            relay_url,
             int(config["batches-per-turn"]),
             float(config["turn-timeout"]),
             log=log,

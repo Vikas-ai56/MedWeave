@@ -1,4 +1,6 @@
+import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 import torch
@@ -12,7 +14,7 @@ from coordinator.relay.relay import (
     decode_tensor,
     encode_tensor,
 )
-from coordinator.relay.transport import RelayClient, RelayServer
+from coordinator.relay.transport import RelayClient, RelayServer, TLSFiles, tls_from_env
 
 OWNER, PEER, VERSION = "inst-1", "inst-2", "3"
 
@@ -161,3 +163,49 @@ def test_http_server_writes_no_logs(server, capfd):
     client.receive(PEER, timeout=5)
     captured = capfd.readouterr()
     assert captured.out == "" and captured.err == ""
+
+
+# --- TLS -------------------------------------------------------------------------
+
+MAKE_CERTS = Path(__file__).parents[3] / "coordinator" / "flower_app" / "make_certs.sh"
+
+
+@pytest.fixture(scope="module")
+def certs(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("certs")
+    subprocess.run([str(MAKE_CERTS), str(directory)], check=True, capture_output=True)
+    return directory
+
+
+@pytest.fixture
+def tls_server(relay, certs):
+    with RelayServer(relay, port=0, tls=TLSFiles(certs / "server.crt", certs / "server.key")) as server:
+        yield server
+
+
+def test_https_round_trip_with_the_deployment_ca(tls_server, certs):
+    assert tls_server.url.startswith("https://")
+    client = RelayClient(tls_server.url, ca_file=certs / "ca.crt")
+    client.send(PEER, envelope(body=b"tensor bytes"))
+    assert client.receive(PEER, timeout=5).body == b"tensor bytes"
+
+
+def test_https_relay_is_refused_without_the_ca_and_over_plain_http(tls_server, certs):
+    with pytest.raises(RelayError, match="cannot reach relay"):
+        RelayClient(tls_server.url).send(PEER, envelope())  # system CAs do not trust the deployment CA
+    with pytest.raises(RelayError, match="cannot reach relay"):
+        RelayClient(tls_server.url.replace("https://", "http://"), ca_file=certs / "ca.crt").send(PEER, envelope())
+    client = RelayClient(tls_server.url, ca_file=certs / "ca.crt")  # the relay keeps serving afterwards
+    client.send(PEER, envelope(body=b"still up"))
+    assert client.receive(PEER, timeout=5).body == b"still up"
+
+
+def test_tls_paths_come_from_the_environment(monkeypatch):
+    monkeypatch.delenv("MEDWEAVE_TLS_CERT", raising=False)
+    monkeypatch.delenv("MEDWEAVE_TLS_KEY", raising=False)
+    assert tls_from_env() is None
+    monkeypatch.setenv("MEDWEAVE_TLS_CERT", "/certs/server.crt")
+    with pytest.raises(RelayError, match="set both"):
+        tls_from_env()
+    monkeypatch.setenv("MEDWEAVE_TLS_KEY", "/certs/server.key")
+    assert tls_from_env() == TLSFiles(Path("/certs/server.crt"), Path("/certs/server.key"))

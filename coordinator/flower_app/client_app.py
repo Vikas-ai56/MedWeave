@@ -22,6 +22,9 @@ the same optimizer and rate. The rate is applied after an institution checkpoint
 is loaded, because loading optimizer state restores the previous turn's rate.
 Run settings used: `optimizer`, `weight-decay`, `partition-seed`, `batch-size`,
 `augment`, `augment-jitter`, `noise-std`, `noise-seed`.
+
+For an https:// relay, MEDWEAVE_TLS_CA names the CA certificate that signed the
+coordinator's certificate; the relay is verified against it.
 """
 
 import os
@@ -34,7 +37,7 @@ from flwr.clientapp import ClientApp
 from coordinator.flower_app import protocol
 from coordinator.flower_app.protocol import DEFAULT_LEARNING_RATE, MODEL_CONFIG, TurnInfo
 from coordinator.flower_app.roles import Batch, run_owner_turn, run_peer_turn
-from coordinator.relay.transport import RelayClient
+from coordinator.relay.transport import RelayClient, ca_from_env
 from institution_data import default_data_dir, evaluation_loader, open_evaluation, open_institution_training, training_loader
 from institution_data.augment import Augment, augmented_batches
 from privacy import GaussianActivationNoise, derive_seed
@@ -100,7 +103,7 @@ def compute_for_peer(msg: Message, context: Context) -> Message:
 
     peer = ComputePeer(MODEL_CONFIG, session_optimizer(context, turn.learning_rate))
     peer.load_backbone(msg.content[protocol.BACKBONE].to_torch_state_dict(), turn.backbone_version)
-    update = run_peer_turn(peer, RelayClient(turn.relay_url), me, turn.timeout)
+    update = run_peer_turn(peer, RelayClient(turn.relay_url, ca_from_env()), me, turn.timeout)
 
     content = RecordDict(
         {
@@ -127,7 +130,7 @@ def train_own_data(msg: Message, context: Context) -> Message:
     summary = run_owner_turn(
         institution,
         turn_batches(me, settings, turn),
-        RelayClient(turn.relay_url),
+        RelayClient(turn.relay_url, ca_from_env()),
         turn.peer_id,
         turn.backbone_version,
         turn.timeout,
