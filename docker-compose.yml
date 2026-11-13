@@ -1,0 +1,107 @@
+# A full MedWeave deployment in containers on one machine: the coordinator, 4 institutions and the
+# dashboard, all over TLS. See docs/docker.md.
+#
+#   docker compose up -d --build              # setup, coordinator, institutions, dashboard
+#   docker compose run --rm session           # run a training session (settings: SESSION_CONFIG)
+#   open http://127.0.0.1:8080                # dashboard
+#   docker compose down                       # stop (add -v to delete checkpoints, data and certificates)
+
+name: medweave
+
+x-institution: &institution
+  image: medweave:latest
+  depends_on:
+    setup: { condition: service_completed_successfully }
+    coordinator: { condition: service_started }
+  environment:
+    MEDWEAVE_TLS_CA: /certs/ca.crt
+  restart: unless-stopped
+
+services:
+  # One-shot: the deployment's CA and coordinator certificate, then the PathMNIST shards.
+  setup:
+    image: medweave:latest
+    build: .
+    command: >
+      bash -c "coordinator/flower_app/make_certs.sh /certs coordinator localhost
+      && python -m institution_data prepare"
+    volumes:
+      - certs:/certs
+      - data:/data
+
+  # Flower SuperLink. It runs the ServerApp, and with it the relay on port 8765.
+  coordinator:
+    image: medweave:latest
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    command: >
+      flower-superlink --host 0.0.0.0
+      --ssl-ca-certfile /certs/ca.crt --ssl-certfile /certs/server.crt --ssl-keyfile /certs/server.key
+    environment:
+      MEDWEAVE_TLS_CERT: /certs/server.crt
+      MEDWEAVE_TLS_KEY: /certs/server.key
+    volumes:
+      - certs:/certs:ro
+      - coordinator-state:/state
+    restart: unless-stopped
+
+  # Institutions: Flower SuperNodes, each with its own state volume (Head, Tail, optimizer).
+  # The data volume is shared read-only here; on separate laptops each holds only its own shard.
+  inst-1:
+    <<: *institution
+    command: flower-supernode --root-certificates /certs/ca.crt --superlink coordinator:8000 --node-config 'institution-id="inst-1"'
+    volumes: [certs:/certs:ro, data:/data:ro, inst-1-state:/state]
+  inst-2:
+    <<: *institution
+    command: flower-supernode --root-certificates /certs/ca.crt --superlink coordinator:8000 --node-config 'institution-id="inst-2"'
+    volumes: [certs:/certs:ro, data:/data:ro, inst-2-state:/state]
+  inst-3:
+    <<: *institution
+    command: flower-supernode --root-certificates /certs/ca.crt --superlink coordinator:8000 --node-config 'institution-id="inst-3"'
+    volumes: [certs:/certs:ro, data:/data:ro, inst-3-state:/state]
+  inst-4:
+    <<: *institution
+    command: flower-supernode --root-certificates /certs/ca.crt --superlink coordinator:8000 --node-config 'institution-id="inst-4"'
+    volumes: [certs:/certs:ro, data:/data:ro, inst-4-state:/state]
+
+  # The dashboard reads the coordinator's metadata database. Its code opens it read-only (mode=ro);
+  # the volume is writable because SQLite readers of a WAL database need its -shm file next to it.
+  dashboard:
+    image: medweave:latest
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    command: uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8080 --log-level warning
+    volumes:
+      - coordinator-state:/state
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # Starts one training session and streams its log: docker compose run --rm session
+  session:
+    image: medweave:latest
+    profiles: [session]
+    depends_on: [coordinator, inst-1, inst-2, inst-3, inst-4]
+    environment:
+      FLWR_HOME: /tmp/flwr_home
+      SESSION_CONFIG: ${SESSION_CONFIG:-}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p "$$FLWR_HOME"
+        printf '[superlink]\ndefault = "docker"\n\n[superlink.docker]\naddress = "coordinator:8000"\nroot-certificates = "/certs/ca.crt"\n' > "$$FLWR_HOME/config.toml"
+        exec flwr run coordinator/flower_app docker --stream \
+          --run-config "relay-host=\"0.0.0.0\" relay-url=\"https://coordinator:8765\" $$SESSION_CONFIG"
+    volumes:
+      - certs:/certs:ro
+
+volumes:
+  certs:
+  data:
+  coordinator-state:
+  inst-1-state:
+  inst-2-state:
+  inst-3-state:
+  inst-4-state:

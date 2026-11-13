@@ -1,0 +1,17 @@
+venv
+.git
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.medweave_local
+.medweave_verify
+.env
+data
+mlflow.db
+mlruns
+mlartifacts
+wandb
+dashboard/frontend/node_modules
+dashboard/frontend/dist
+experiments
+tests

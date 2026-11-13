@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # Create the TLS files for a MedWeave deployment with openssl:
 #   ca.crt, ca.key          a private certificate authority (keep ca.key on the coordinator only)
 #   server.crt, server.key  the coordinator's certificate, used by the Flower SuperLink and the relay
@@ -8,7 +8,7 @@
 # The server certificate is valid for localhost and 127.0.0.1 plus every extra name: the coordinator
 # laptop's LAN IP (e.g. 192.168.1.10) or a hostname (e.g. coordinator, for Docker). Institutions get
 # only ca.crt. Existing files are kept, so re-running is safe; delete the directory to start over.
-set -e
+set -euo pipefail
 OUT=${1:?usage: make_certs.sh <out-dir> [extra-name ...]}
 shift
 mkdir -p "$OUT"
@@ -20,7 +20,10 @@ fi
 
 SAN="DNS:localhost,IP:127.0.0.1"
 for name in "$@"; do
-  if [[ $name =~ '^[0-9.]+$' || $name == *:* ]]; then SAN="$SAN,IP:$name"; else SAN="$SAN,DNS:$name"; fi
+  case $name in
+    *:* | *[0-9].*[0-9]) case $name in *[!0-9a-fA-F.:]*) SAN="$SAN,DNS:$name" ;; *) SAN="$SAN,IP:$name" ;; esac ;;
+    *) SAN="$SAN,DNS:$name" ;;
+  esac
 done
 
 openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \

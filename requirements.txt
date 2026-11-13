@@ -1,0 +1,9 @@
+# Runtime dependencies of the MedWeave system (coordinator, institutions, dashboard backend),
+# pinned to the versions it was tested with. The Docker image installs torch from the CPU-only
+# index first. Experiments add experiments/requirements.txt (scikit-learn); tests add pytest.
+torch==2.15.0
+numpy==2.5.4
+flwr==1.43.0
+mlflow==3.18.0
+fastapi==0.138.2
+uvicorn==0.49.0
